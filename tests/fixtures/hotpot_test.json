@@ -1,0 +1,15 @@
+[
+
+{"_id":"123","answer":"Texas","question":"Where is University of Texas at Austin","context":[["UT Austin",
+["UT Austin is one of the best universities in US.","UT Austin is located in Austin"]],["Texas",
+["Texas is a southern state of US","University of Texas is located in Austin"]]],
+"supporting_facts":[["UT Austin",0],["Texas",0]]
+},
+
+{"_id":"124","answer":"yes","question":"Where is University of Texas at Austin","context":[["UT Austin",
+["UT Austin is one of the best universities in US.","UT Austin is located in Austin"]],["Texas",
+["Texas is a southern state of US","University of Texas is located in Austin"]]],
+"supporting_facts":[["UT Austin",0],["Texas",0]]
+}
+
+]
