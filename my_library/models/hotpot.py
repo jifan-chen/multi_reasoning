@@ -1,3 +1,4 @@
+from torch.autograd import Variable
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -11,18 +12,30 @@ from allennlp.data import Vocabulary
 from allennlp.models.model import Model
 from allennlp.modules import Highway
 from allennlp.modules import Seq2SeqEncoder, SimilarityFunction, TimeDistributed, TextFieldEmbedder, MatrixAttention
-from allennlp.modules.matrix_attention.legacy_matrix_attention import LegacyMatrixAttention
-from allennlp.modules.matrix_attention import bilinear_matrix_attention
 from allennlp.nn import util, InitializerApplicator, RegularizerApplicator
 from allennlp.training.metrics import BooleanAccuracy, CategoricalAccuracy, SquadEmAndF1
 
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
+class LockedDropout(nn.Module):
+    def __init__(self, dropout):
+        super().__init__()
+        self.dropout = dropout
+
+    def forward(self, x):
+        dropout = self.dropout
+        if not self.training:
+            return x
+        m = x.data.new(x.size(0), 1, x.size(2)).bernoulli_(1 - dropout)
+        mask = Variable(m.div_(1 - dropout), requires_grad=False)
+        mask = mask.expand_as(x)
+        return mask * x
+
 
 class BiAttention(nn.Module):
     def __init__(self, input_size, dropout):
         super().__init__()
-        # self.dropout = LockedDropout(dropout)
+        self.dropout = LockedDropout(dropout)
         self.input_linear = nn.Linear(input_size, 1, bias=False)
         self.memory_linear = nn.Linear(input_size, 1, bias=False)
 
@@ -31,8 +44,8 @@ class BiAttention(nn.Module):
     def forward(self, input, memory, mask):
         bsz, input_len, memory_len = input.size(0), input.size(1), memory.size(1)
 
-        # input = self.dropout(input)
-        # memory = self.dropout(memory)
+        input = self.dropout(input)
+        memory = self.dropout(memory)
 
         input_dot = self.input_linear(input)
         memory_dot = self.memory_linear(memory).view(bsz, 1, memory_len)
@@ -106,7 +119,7 @@ class BidirectionalAttentionFlow(Model):
                  dropout: float = 0.2,
                  mask_lstms: bool = True,
                  strong_sup: bool = False,
-                 initializer: InitializerApplicator = InitializerApplicator(),
+                 # initializer: InitializerApplicator = InitializerApplicator(),
                  regularizer: Optional[RegularizerApplicator] = None) -> None:
         super(BidirectionalAttentionFlow, self).__init__(vocab, regularizer)
 
@@ -121,7 +134,7 @@ class BidirectionalAttentionFlow(Model):
         self._span_start_encoder = span_start_encoder
         self._type_encoder = type_encoder
         self._strong_sup = strong_sup
-        self.biattention = BiAttention(input_size=160, dropout=None)
+        self.biattention = BiAttention(input_size=200, dropout=0.2)
 
         encoding_dim = phrase_layer.get_output_dim()
         modeling_dim = modeling_layer.get_output_dim()
@@ -133,7 +146,7 @@ class BidirectionalAttentionFlow(Model):
 
         span_start_input_dim = span_start_encoder.get_output_dim()
 
-        self._span_start_predictor = TimeDistributed(torch.nn.Linear(span_start_input_dim, 1))
+        self._span_start_predictor = torch.nn.Linear(span_start_input_dim, 1)
         self._type_linear = torch.nn.Sequential(
                 torch.nn.Linear(2 * modeling_dim, modeling_dim),
                 torch.nn.ReLU()
@@ -143,7 +156,7 @@ class BidirectionalAttentionFlow(Model):
         span_end_encoding_dim = span_end_encoder.get_output_dim()
         span_end_input_dim = span_end_encoding_dim
         self._span_end_projection = torch.nn.Linear(projection_dim + self_attention_dim*3, projection_dim)
-        self._span_end_predictor = TimeDistributed(torch.nn.Linear(span_end_input_dim, 1))
+        self._span_end_predictor = torch.nn.Linear(span_end_input_dim, 1)
 
         # Bidaf has lots of layer dimensions which need to match up - these aren't necessarily
         # obvious from the configuration files, so we check here.
@@ -164,7 +177,7 @@ class BidirectionalAttentionFlow(Model):
             self._dropout = lambda x: x
         self._mask_lstms = mask_lstms
 
-        initializer(self)
+        # initializer(self)
 
     def forward(self,  # type: ignore
                 question: Dict[str, torch.LongTensor],
@@ -225,8 +238,10 @@ class BidirectionalAttentionFlow(Model):
             string from the original passage that the model thinks is the best answer to the
             question.
         """
-        embedded_question = self._highway_layer(self._text_field_embedder(question))
-        embedded_passage = self._highway_layer(self._text_field_embedder(passage))
+        # embedded_question = self._highway_layer(self._text_field_embedder(question))
+        # embedded_passage = self._highway_layer(self._text_field_embedder(passage))
+        embedded_question = self._text_field_embedder(question)
+        embedded_passage = self._text_field_embedder(passage)
         batch_size = embedded_question.size(0)
         passage_length = embedded_passage.size(1)
         question_mask = util.get_text_field_mask(question).float()
@@ -239,38 +254,38 @@ class BidirectionalAttentionFlow(Model):
         encoding_dim = encoded_question.size(-1)
 
         # Shape: (batch_size, passage_length, question_length)
-        passage_question_similarity = self._matrix_attention(encoded_passage, encoded_question)
-        # Shape: (batch_size, passage_length, question_length)
-        passage_question_attention = util.masked_softmax(passage_question_similarity, question_mask)
-        # Shape: (batch_size, passage_length, encoding_dim)
-        passage_question_vectors = util.weighted_sum(encoded_question, passage_question_attention)
+        # passage_question_similarity = self._matrix_attention(encoded_passage, encoded_question)
+        # # Shape: (batch_size, passage_length, question_length)
+        # passage_question_attention = util.masked_softmax(passage_question_similarity, question_mask)
+        # # Shape: (batch_size, passage_length, encoding_dim)
+        # passage_question_vectors = util.weighted_sum(encoded_question, passage_question_attention)
+        #
+        # # We replace masked values with something really negative here, so they don't affect the
+        # # max below.
+        # masked_similarity = util.replace_masked_values(passage_question_similarity,
+        #                                                question_mask.unsqueeze(1),
+        #                                                -1e7)
+        # # Shape: (batch_size, passage_length)
+        # question_passage_similarity = masked_similarity.max(dim=-1)[0].squeeze(-1)
+        # # Shape: (batch_size, passage_length)
+        # question_passage_attention = util.masked_softmax(question_passage_similarity, passage_mask)
+        # # Shape: (batch_size, encoding_dim)
+        # question_passage_vector = util.weighted_sum(encoded_passage, question_passage_attention)
+        # # Shape: (batch_size, passage_length, encoding_dim)
+        # tiled_question_passage_vector = question_passage_vector.unsqueeze(1).expand(batch_size,
+        #                                                                            passage_length,
+        #                                                                             encoding_dim)
+        # # Shape: (batch_size, passage_length, encoding_dim * 4)
+        # final_merged_passage = torch.cat([encoded_passage,
+        #                                   passage_question_vectors,
+        #                                   encoded_passage * passage_question_vectors,
+        #                                   encoded_passage * tiled_question_passage_vector],
+        #                                  dim=-1)
 
-        # We replace masked values with something really negative here, so they don't affect the
-        # max below.
-        masked_similarity = util.replace_masked_values(passage_question_similarity,
-                                                       question_mask.unsqueeze(1),
-                                                       -1e7)
-        # Shape: (batch_size, passage_length)
-        question_passage_similarity = masked_similarity.max(dim=-1)[0].squeeze(-1)
-        # Shape: (batch_size, passage_length)
-        question_passage_attention = util.masked_softmax(question_passage_similarity, passage_mask)
-        # Shape: (batch_size, encoding_dim)
-        question_passage_vector = util.weighted_sum(encoded_passage, question_passage_attention)
-        # Shape: (batch_size, passage_length, encoding_dim)
-        tiled_question_passage_vector = question_passage_vector.unsqueeze(1).expand(batch_size,
-                                                                                   passage_length,
-                                                                                    encoding_dim)
-        # Shape: (batch_size, passage_length, encoding_dim * 4)
-        final_merged_passage = torch.cat([encoded_passage,
-                                          passage_question_vectors,
-                                          encoded_passage * passage_question_vectors,
-                                          encoded_passage * tiled_question_passage_vector],
-                                         dim=-1)
-
-        # final_merged_passage = self.biattention(encoded_passage, encoded_question, question_mask)
+        final_merged_passage = self.biattention(encoded_passage, encoded_question, question_mask)
         final_merged_passage = self._merged_projection(final_merged_passage)
-        modeled_passage = self._dropout(self._modeling_layer(final_merged_passage, passage_lstm_mask))
-        modeling_dim = modeled_passage.size(-1)
+        # modeled_passage = self._dropout(self._modeling_layer(final_merged_passage, passage_lstm_mask))
+        # modeling_dim = modeled_passage.size(-1)
 
         # Shape: (batch_size, passage_length, self_attention_dim)
         # if self._strong_sup:
@@ -280,13 +295,12 @@ class BidirectionalAttentionFlow(Model):
         # else:
         #     modeled_passage = modeled_passage + self._self_attention_layer(modeled_passage, passage_lstm_mask)
 
-        self_attention_dim = modeled_passage.size(-1)
-        encoded_span_start = self._span_start_encoder(modeled_passage, passage_lstm_mask)
+        encoded_span_start = self._span_start_encoder(final_merged_passage, passage_lstm_mask)
 
         # Shape: (batch_size, passage_length, merged_projection_dim + self_attention_dim))
         # span_start_input = self._dropout(torch.cat([final_merged_passage, modeled_passage], dim=-1))
         # Shape: (batch_size, passage_length)
-        span_start_logits = self._span_start_predictor(encoded_span_start).squeeze(-1)
+        span_start_logits = self._span_start_predictor(encoded_span_start).squeeze(-1) - 1e30 * (1 - passage_mask)
         # Shape: (batch_size, passage_length)
         span_start_probs = util.masked_softmax(span_start_logits, passage_mask)
 
@@ -298,29 +312,28 @@ class BidirectionalAttentionFlow(Model):
         #                                                                            self_attention_dim)
 
         # Shape: (batch_size, passage_length, merged_projection_dim + self_attention_dim * 3)
-        span_end_representation = torch.cat([encoded_span_start, modeled_passage], dim=-1)
+        span_end_representation = torch.cat([encoded_span_start, final_merged_passage], dim=-1)
 
         # Shape: (batch_size, passage_length, projection_dim)
         # span_end_representation = self._span_end_projection(span_end_representation)
 
         # Shape: (batch_size, passage_length, encoding_dim)
-        encoded_span_end = self._dropout(self._span_end_encoder(span_end_representation,
-                                                                passage_lstm_mask))
+        encoded_span_end = self._span_end_encoder(span_end_representation, passage_lstm_mask)
         # Shape: (batch_size, passage_length, merged_projection_dim + span_end_encoding_dim)
         # span_end_input = self._dropout(torch.cat([final_merged_passage, encoded_span_end], dim=-1))
-        span_end_logits = self._span_end_predictor(encoded_span_end).squeeze(-1)
+        span_end_logits = self._span_end_predictor(encoded_span_end).squeeze(-1) - 1e30 * (1 - passage_mask)
         span_end_probs = util.masked_softmax(span_end_logits, passage_mask)
-        span_start_logits = util.replace_masked_values(span_start_logits, passage_mask, -1e7)
-        span_end_logits = util.replace_masked_values(span_end_logits, passage_mask, -1e7)
+        # span_start_logits = util.replace_masked_values(span_start_logits, passage_mask, -1e7)
+        # span_end_logits = util.replace_masked_values(span_end_logits, passage_mask, -1e7)
         best_span = self.get_best_span(span_start_logits, span_end_logits)
 
-        type_representation = torch.cat([modeled_passage, encoded_span_start], dim=2)
+        type_representation = torch.cat([final_merged_passage, encoded_span_end], dim=2)
         type_representation = torch.max(type_representation, 1)[0]
         type_logits = self._type_predictor(type_representation)
         type_predicts = torch.argmax(type_logits, 1)
 
         output_dict = {
-                "passage_question_attention": passage_question_attention,
+                # "passage_question_attention": passage_question_attention,
                 "span_start_logits": span_start_logits,
                 "span_start_probs": span_start_probs,
                 "span_end_logits": span_end_logits,
@@ -375,14 +388,14 @@ class BidirectionalAttentionFlow(Model):
 
                 output_dict['best_span_str'].append(best_span_string)
                 answer_texts = metadata[i].get('answer_texts', [])
-                print('type:', type_predicts[i])
+                # print('type:', type_predicts[i])
                 # print('answer_text:', answer_texts, 'predict:', best_span_string)
                 if answer_texts:
                     self._squad_metrics(best_span_string, answer_texts)
             output_dict['question_tokens'] = question_tokens
             output_dict['passage_tokens'] = passage_tokens
-            print('yes:', count_yes)
-            print('no:', count_no)
+            # print('yes:', count_yes)
+            # print('no:', count_no)
 
         # print('\n........debugging.........')
         # print(best_span)

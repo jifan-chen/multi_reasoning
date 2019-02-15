@@ -51,6 +51,7 @@ class MultiHeadSelfAttentionWithSup(Seq2SeqEncoder):
         self._output_dim = output_projection_dim or input_dim
         self._attention_dim = attention_dim
         self._values_dim = values_dim
+        self._num_heads_of_supervision = 1
 
         if attention_dim % num_heads != 0:
             raise ValueError(f"Key size ({attention_dim}) must be divisible by the number of "
@@ -97,7 +98,6 @@ class MultiHeadSelfAttentionWithSup(Seq2SeqEncoder):
         """
 
         num_heads = self._num_heads
-        num_heads_strong_sup = int(num_heads / 2)
 
         batch_size, timesteps, _ = inputs.size()
         if mask is None:
@@ -133,16 +133,18 @@ class MultiHeadSelfAttentionWithSup(Seq2SeqEncoder):
         # shape (num_heads * batch_size, timesteps, timesteps)
         # Normalise the distributions, using the same mask for all heads.
         # attention = masked_softmax(scaled_similarities, mask.repeat(1, num_heads).view(batch_size * num_heads, timesteps))
-        # print('num_heads / 2:', num_heads_strong_sup)
-        # print('attention_shape:', attention.shape)
-        # print('mask_sp sum:', mask_sp.sum(-1))
+
         attention = masked_softmax(scaled_similarities,
                                    mask.repeat(1, num_heads).view(batch_size * num_heads, timesteps))
         # attention_sp = attention.clone().split(num_heads_strong_sup * batch_size, dim=0)[1]
-        test = mask_sp.repeat(1, num_heads).view(batch_size * num_heads, 1, timesteps)
+        # print('\nmask_sp:', mask_sp.shape)
+        # print(mask_sp.repeat(1, self._num_heads_of_supervision).shape)
+        mask_sp = torch.cat([mask_sp.repeat(1, self._num_heads_of_supervision),
+                            mask.repeat(1, num_heads - self._num_heads_of_supervision)],
+                            dim=-1).view(batch_size * num_heads, 1, timesteps)
+        # print(mask_sp.shape)
         # print('attention_sp:', attention_sp.shape)
-        print('mask_sp:', torch.sum(mask_sp, dim=-1))
-        loss = torch.mean(-torch.log(torch.sum(attention * test + 1e-20, dim=-1)))
+        loss = torch.mean(-torch.log(torch.sum(attention * mask_sp, dim=-1) + 1e-30))
 
         attention = self._attention_dropout(attention)
 

@@ -73,23 +73,23 @@
       "type": "gru",
       "bidirectional": true,
       "input_size": 400,
-      "hidden_size": 80,
+      "hidden_size": 100,
       "num_layers": 1,
       "dropout": 0.2
     },
 
     "matrix_attention": {
       "type": "linear",
-      "tensor_1_dim": 160,
-      "tensor_2_dim": 160,
+      "tensor_1_dim": 200,
+      "tensor_2_dim": 200,
       "combination": "x,y,x*y"
     },
 
     "modeling_layer": {
-      "type": "lstm",
+      "type": "gru",
       "bidirectional": true,
-      "input_size": 160,
-      "hidden_size": 80,
+      "input_size": 200,
+      "hidden_size": 100,
       "num_layers": 1,
       "dropout": 0.2
     },
@@ -97,8 +97,8 @@
     "span_start_encoder": {
       "type": "gru",
       "bidirectional": true,
-      "input_size": 160,
-      "hidden_size": 80,
+      "input_size": 200,
+      "hidden_size": 100,
       "num_layers": 1,
       "dropout": 0.2
     },
@@ -106,16 +106,16 @@
     "self_attention_layer":{
       "type": "multi_head_self_attention",
       "num_heads": 2,
-      "input_dim": 160,
-      "attention_dim": 160,
-      "values_dim": 160
+      "input_dim": 200,
+      "attention_dim": 200,
+      "values_dim": 200
     },
 
     "span_end_encoder": {
       "type": "gru",
       "bidirectional": true,
-      "input_size": 320,
-      "hidden_size": 80,
+      "input_size": 400,
+      "hidden_size": 100,
       "num_layers": 1,
       "dropout": 0.2
     },
@@ -123,8 +123,8 @@
     "type_encoder": {
       "type": "gru",
       "bidirectional": true,
-      "input_size": 320,
-      "hidden_size": 80,
+      "input_size": 400,
+      "hidden_size": 100,
       "num_layers": 1,
       "dropout": 0.2
     },

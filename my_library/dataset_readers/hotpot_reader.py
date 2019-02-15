@@ -82,7 +82,7 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
     if answer_texts:
         metadata['answer_texts'] = answer_texts
 
-    print('answer:', answer_texts[0])
+    # print('answer:', answer_texts[0])
     # print('answer_text:', answer_texts)
     if answer_texts[0] == 'yes':
         fields['q_type'] = LabelField(1, skip_indexing=True)
@@ -105,11 +105,11 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
             for span_start, span_end in token_spans:
                 candidate_answers[(span_start, span_end)] += 1
             span_start, span_end = candidate_answers.most_common(1)[0][0]
-            print('best span:', span_start, span_end)
+            # print('best span:', span_start, span_end)
             # print('span:', span_start, span_end)
             # print(metadata['passage_tokens'][span_start:span_end + 1])
             if span_start > para_limit or span_end > para_limit:
-                print('span_start, span_end:', span_start, span_end)
+                # print('span_start, span_end:', span_start, span_end)
                 fields['span_start'] = IndexField(-100, passage_field)
                 fields['span_end'] = IndexField(-100, passage_field)
             else:
@@ -192,7 +192,7 @@ class HotpotDatasetReader(DatasetReader):
             for para in paragraphs:
                 cur_title, cur_para = para[0], para[1]
                 p = []
-                for sent_id, sent in enumerate(cur_para):
+                for sent_id, sent in enumerate(cur_para[:3]):
                     p.append(sent)
                     if (cur_title, sent_id) in sp_set:
                         supporting_facts.append(sent)
@@ -205,15 +205,13 @@ class HotpotDatasetReader(DatasetReader):
             question_text = article['question'].strip().replace("\n", "")
             answer_text = article['answer'].strip().replace("\n", "")
             span_starts = self.find_all_span_starts(answer_text, concat_article)
-            print('article id:', article['_id'])
-            print('span_starts:', span_starts)
-            test = [token.text for token in self._tokenizer.tokenize(question_text)]
-            print(test)
+            # print('article id:', article['_id'])
+            # print('span_starts:', span_starts)
             if not span_starts:
                 # print(self.count)
                 self.count += 1
             span_ends = [start + len(answer_text) for start in span_starts]
-            print('span_ends:', span_ends)
+            # print('span_ends:', span_ends)
             sp_starts = [self.find_span_starts(s, concat_article) for s in supporting_facts]
             sp_ends = [start + len(span) for span, start in zip(supporting_facts, sp_starts)]
 
@@ -272,7 +270,7 @@ class HotpotDatasetReader(DatasetReader):
 
         # print('token_spans:', token_spans_sp)
 
-        print('context length:', len(passage_tokens))
+        # print('context length:', len(passage_tokens))
         return make_reading_comprehension_instance(self._tokenizer.tokenize(question_text),
                                                    passage_tokens,
                                                    self._token_indexers,

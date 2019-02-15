@@ -1,8 +1,4 @@
 from torch.autograd import Variable
-import numpy as np
-from torch.nn.utils import rnn
-
-import logging
 from typing import Any, Dict, List, Optional
 import torch
 from torch.nn.functional import nll_loss
@@ -14,7 +10,6 @@ from allennlp.data import Vocabulary
 from allennlp.models.model import Model
 from allennlp.modules import Highway
 from allennlp.modules import Seq2SeqEncoder, SimilarityFunction, TimeDistributed, TextFieldEmbedder, MatrixAttention
-from allennlp.modules.matrix_attention.legacy_matrix_attention import LegacyMatrixAttention
 from allennlp.modules.matrix_attention import bilinear_matrix_attention
 from allennlp.nn import util, InitializerApplicator, RegularizerApplicator
 from allennlp.training.metrics import BooleanAccuracy, CategoricalAccuracy, SquadEmAndF1
@@ -27,55 +22,54 @@ class BidirectionalAttentionFlow(Model):
                  phrase_layer: Seq2SeqEncoder,
                  span_start_encoder: Seq2SeqEncoder,
                  span_end_encoder: Seq2SeqEncoder,
+                 self_attention_layer: Seq2SeqEncoder,
                  type_encoder: Seq2SeqEncoder,
+                 modeling_layer: Seq2SeqEncoder,
+                 matrix_attention: MatrixAttention,
                  dropout: float = 0.2,
+                 strong_sup: bool = False,
                  regularizer: Optional[RegularizerApplicator] = None) -> None:
+
         super(BidirectionalAttentionFlow, self).__init__(vocab, regularizer)
         self._text_field_embedder = text_field_embedder
-        self.word_dim = 300
         self._phrase_layer = phrase_layer
         self._dropout = torch.nn.Dropout(p=dropout)
-        self.rnn_start = span_start_encoder
-        self.rnn_end = span_end_encoder
-        self.rnn_type = type_encoder
+        self._modeling_layer = modeling_layer
+        self._span_start_encoder = span_start_encoder
+        self._span_end_encoder = span_end_encoder
+        self._type_encoder = type_encoder
+        self._self_attention_layer = self_attention_layer
+        self._matrix_attention = matrix_attention
+        self._strong_sup = strong_sup
 
-        self.hidden = 80
+        encoding_dim = span_start_encoder.get_output_dim()
+        hidden = 100
 
-        char_hidden = 100
-        hidden = 80
-        keep_prob = 0.8
-        self.rnn = EncoderRNN(char_hidden + self.word_dim, hidden, 1, True, True, 1-keep_prob, False)
-
-        self.qc_att = BiAttention(hidden*2, 1-keep_prob)
+        self.qc_att = BiAttention(encoding_dim, dropout)
         self.linear_1 = nn.Sequential(
-                nn.Linear(hidden*8, hidden),
+                nn.Linear(encoding_dim * 4, encoding_dim),
                 nn.ReLU()
             )
 
-        self.rnn_2 = EncoderRNN(hidden, hidden, 1, False, True, 1-keep_prob, False)
-        self.self_att = BiAttention(hidden*2, 1-keep_prob)
+        self.self_att = BiAttention(encoding_dim, dropout, strong_sup=strong_sup)
         self.linear_2 = nn.Sequential(
-                nn.Linear(hidden*8, hidden),
+                nn.Linear(encoding_dim * 4, encoding_dim),
                 nn.ReLU()
             )
 
-        self.linear_start = nn.Linear(hidden*2, 1)
+        self.modeled_gate = nn.Sequential(
+            nn.Linear(encoding_dim, 100),
+            nn.ReLU(),
+            nn.Linear(100, 2)
+        )
 
-        self.linear_end = nn.Linear(hidden*2, 1)
+        self.linear_start = nn.Linear(encoding_dim, 1)
 
-        self.linear_type = nn.Linear(hidden*2, 3)
+        self.linear_end = nn.Linear(encoding_dim, 1)
 
-        self.cache_S = 0
+        self.linear_type = nn.Linear(encoding_dim * 3, 3)
+
         self._squad_metrics = SquadEmAndF1()
-
-    def get_output_mask(self, outer):
-        S = outer.size(1)
-        if S <= self.cache_S:
-            return Variable(self.cache_mask[:S, :S], requires_grad=False)
-        self.cache_S = S
-        np_mask = np.tril(np.triu(np.ones((S, S)), 0), 15)
-        self.cache_mask = outer.data.new(S, S).copy_(torch.from_numpy(np_mask))
-        return Variable(self.cache_mask, requires_grad=False)
 
     def forward(self,  # type: ignore
                 question: Dict[str, torch.LongTensor],
@@ -85,10 +79,6 @@ class BidirectionalAttentionFlow(Model):
                 q_type: torch.IntTensor = None,
                 sp_mask: torch.IntTensor = None,
                 metadata: List[Dict[str, Any]] = None) -> Dict[str, torch.Tensor]:
-
-        # print('y1:', span_start.squeeze())
-        # print('y2:', span_end.squeeze())
-        # print('q_type:', q_type)
 
         embedded_question = self._text_field_embedder(question)
         embedded_passage = self._text_field_embedder(passage)
@@ -100,23 +90,55 @@ class BidirectionalAttentionFlow(Model):
         ques_output = self._dropout(self._phrase_layer(embedded_question, ques_mask))
         context_output = self._dropout(self._phrase_layer(embedded_passage, context_mask))
 
-        output = self.qc_att(context_output, ques_output, ques_mask)
-        output = self.linear_1(output)
+        modeled_passage = self.qc_att(context_output, ques_output, ques_mask)
+        modeled_passage = self.linear_1(modeled_passage)
+        modeled_passage = self._modeling_layer(modeled_passage, context_mask)
 
-        # output_t = self.rnn_2(output, context_lens)
-        # output_t = self.self_att(output_t, output_t, context_mask)
-        # output_t = self.linear_2(output_t)
+
+        # print(gate[0])
+        # print(sp_mask[0])
+
+        # for p, q in zip(gate[0], sp_mask[0]):
+        #     if q == 1.0:
+        #         print(p, q)
+        # print(torch.chunk(gate, 2, dim=-1)[0])
+
+
+        # print(gate)
+        # strong_sup_loss1 = torch.mean(-torch.log(torch.sum(gate.unsqueeze(-1) * sp_mask, -1) /
+        #                                          torch.sum(sp_mask, -1)))
+        # strong_sup_loss2 = torch.mean(-torch.log(torch.sum((1-gate).unsqueeze(-1) * (1-sp_mask), -1) /
+        #                                          torch.sum((1-sp_mask), -1)))
         #
-        # output = output + output_t
 
-        output_start = self.rnn_start(output, context_mask)
+        # print('\n strong_sup_loss2:', strong_sup_loss2)
+
+        if self._strong_sup:
+            self_att_passage = self._self_attention_layer(modeled_passage, context_mask, sp_mask)
+            modeled_passage = modeled_passage + self_att_passage[0]
+            strong_sup_loss = self_att_passage[1]
+        else:
+            modeled_passage = modeled_passage + \
+                              self.linear_2(self.self_att(modeled_passage, modeled_passage, context_mask))
+
+        gate_logit = self.modeled_gate(modeled_passage)
+
+        gate = F.softmax(gate_logit, dim=-1)
+        nll_loss = nn.NLLLoss()
+        strong_sup_loss1 = nll_loss(F.log_softmax(gate_logit, dim=-1).view(batch_size * context_lens, -1),
+                                    sp_mask.long().view(batch_size * context_lens))
+        print('\n strong_sup_loss1:', strong_sup_loss1)
+        modeled_passage = torch.chunk(gate, 2, dim=-1)[1] * modeled_passage + modeled_passage
+
+        output_start = self._span_start_encoder(modeled_passage, context_mask)
         span_start_logits = self.linear_start(output_start).squeeze(2) - 1e30 * (1 - context_mask)
-        output_end = torch.cat([output, output_start], dim=2)
-        output_end = self.rnn_end(output_end, context_mask)
+        output_end = torch.cat([modeled_passage, output_start], dim=2)
+        output_end = self._span_end_encoder(output_end, context_mask)
         span_end_logits = self.linear_end(output_end).squeeze(2) - 1e30 * (1 - context_mask)
 
-        output_type = torch.cat([output, output_end], dim=2)
-        output_type = torch.max(self.rnn_type(output_type, context_mask), 1)[0]
+        output_type = torch.cat([modeled_passage, output_end, output_start], dim=2)
+        output_type = torch.max(output_type, 1)[0]
+        # output_type = torch.max(self.rnn_type(output_type, context_mask), 1)[0]
         predict_type = self.linear_type(output_type)
         type_predicts = torch.argmax(predict_type, 1)
 
@@ -131,18 +153,17 @@ class BidirectionalAttentionFlow(Model):
         # Compute the loss for training.
         if span_start is not None:
             try:
-                # print(span_start_logits.shape)
-                # print(span_end_logits.shape)
-                # print(context_mask)
-                # print(q_type)
                 start_loss = nll_loss(util.masked_log_softmax(span_start_logits, None), span_start.squeeze(-1))
                 # self._span_start_accuracy(span_start_logits, span_start.squeeze(-1))
                 end_loss = nll_loss(util.masked_log_softmax(span_end_logits, None), span_end.squeeze(-1))
                 # self._span_end_accuracy(span_end_logits, span_end.squeeze(-1))
                 # self._span_accuracy(best_span, torch.stack([span_start, span_end], -1))
-                # print('q_type:', q_type)
                 type_loss = nll_loss(util.masked_log_softmax(predict_type, None), q_type)
-                loss = start_loss + end_loss + type_loss
+                # loss = start_loss + end_loss + type_loss
+                loss = start_loss + end_loss + type_loss + (strong_sup_loss1 * 0.2)
+                if self._strong_sup:
+                    loss += strong_sup_loss
+                    print('\n strong_sup_loss:', strong_sup_loss)
                 print('start_loss:{} end_loss:{} type_loss:{}'.format(start_loss,end_loss,type_loss))
                 output_dict["loss"] = loss
 
@@ -237,74 +258,17 @@ class LockedDropout(nn.Module):
         return mask * x
 
 
-class EncoderRNN(nn.Module):
-    def __init__(self, input_size, num_units, nlayers, concat, bidir, dropout, return_last):
-        super().__init__()
-        self.rnns = []
-        for i in range(nlayers):
-            if i == 0:
-                input_size_ = input_size
-                output_size_ = num_units
-            else:
-                input_size_ = num_units if not bidir else num_units * 2
-                output_size_ = num_units
-            self.rnns.append(nn.GRU(input_size_, output_size_, 1, bidirectional=bidir, batch_first=True))
-        self.rnns = nn.ModuleList(self.rnns)
-        self.init_hidden = nn.ParameterList([nn.Parameter(torch.Tensor(2 if bidir else 1, 1, num_units).zero_()) for _ in range(nlayers)])
-        self.dropout = LockedDropout(dropout)
-        self.concat = concat
-        self.nlayers = nlayers
-        self.return_last = return_last
-
-        # self.reset_parameters()
-
-    def reset_parameters(self):
-        for rnn in self.rnns:
-            for name, p in rnn.named_parameters():
-                if 'weight' in name:
-                    p.data.normal_(std=0.1)
-                else:
-                    p.data.zero_()
-
-    def get_init(self, bsz, i):
-        return self.init_hidden[i].expand(-1, bsz, -1).contiguous()
-
-    def forward(self, input, input_lengths=None):
-        bsz, slen = input.size(0), input.size(1)
-        output = input
-        outputs = []
-        if input_lengths is not None:
-            lens = input_lengths.data.cpu().numpy()
-        for i in range(self.nlayers):
-            hidden = self.get_init(bsz, i)
-            output = self.dropout(output)
-            if input_lengths is not None:
-                output = rnn.pack_padded_sequence(output, lens, batch_first=True)
-            output, hidden = self.rnns[i](output, hidden)
-            if input_lengths is not None:
-                output, _ = rnn.pad_packed_sequence(output, batch_first=True)
-                if output.size(1) < slen: # used for parallel
-                    padding = Variable(output.data.new(1, 1, 1).zero_())
-                    output = torch.cat([output, padding.expand(output.size(0), slen-output.size(1), output.size(2))], dim=1)
-            if self.return_last:
-                outputs.append(hidden.permute(1, 0, 2).contiguous().view(bsz, -1))
-            else:
-                outputs.append(output)
-        if self.concat:
-            return torch.cat(outputs, dim=2)
-        return outputs[-1]
-
-
 class BiAttention(nn.Module):
-    def __init__(self, input_size, dropout):
+    def __init__(self, input_size, dropout, strong_sup=False):
         super().__init__()
         self.dropout = LockedDropout(dropout)
         self.input_linear = nn.Linear(input_size, 1, bias=False)
         self.memory_linear = nn.Linear(input_size, 1, bias=False)
 
         self.dot_scale = nn.Parameter(torch.Tensor(input_size).uniform_(1.0 / (input_size ** 0.5)))
+        self.strong_sup = strong_sup
 
-    def forward(self, input, memory, mask):
+    def forward(self, input, memory, mask, mask_sp=None):
         bsz, input_len, memory_len = input.size(0), input.size(1), memory.size(1)
 
         input = self.dropout(input)
@@ -314,22 +278,16 @@ class BiAttention(nn.Module):
         memory_dot = self.memory_linear(memory).view(bsz, 1, memory_len)
         cross_dot = torch.bmm(input * self.dot_scale, memory.permute(0, 2, 1).contiguous())
         att = input_dot + memory_dot + cross_dot
-        att = att - 1e30 * (1 - mask[:,None])
+        att = att - 1e30 * (1 - mask[:, None])
 
         weight_one = F.softmax(att, dim=-1)
         output_one = torch.bmm(weight_one, memory)
         weight_two = F.softmax(att.max(dim=-1)[0], dim=-1).view(bsz, 1, input_len)
         output_two = torch.bmm(weight_two, input)
 
-        return torch.cat([input, output_one, input*output_one, output_two*output_one], dim=-1)
-
-
-class GateLayer(nn.Module):
-    def __init__(self, d_input, d_output):
-        super(GateLayer, self).__init__()
-        self.linear = nn.Linear(d_input, d_output)
-        self.gate = nn.Linear(d_input, d_output)
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, input):
-        return self.linear(input) * self.sigmoid(self.gate(input))
+        if self.strong_sup:
+            # print(att.shape, mask_sp.shape)
+            loss = torch.mean(-torch.log(torch.sum(weight_one * mask_sp.unsqueeze(1), dim=-1) + 1e-30))
+            return torch.cat([input, output_one, input*output_one, output_two*output_one], dim=-1), loss
+        else:
+            return torch.cat([input, output_one, input*output_one, output_two*output_one], dim=-1)
