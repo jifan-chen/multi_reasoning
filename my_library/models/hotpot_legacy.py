@@ -9,10 +9,12 @@ from allennlp.common.checks import check_dimensions_match
 from allennlp.data import Vocabulary
 from allennlp.models.model import Model
 from allennlp.modules import Highway
+from allennlp.modules.span_extractors import EndpointSpanExtractor
 from allennlp.modules import Seq2SeqEncoder, SimilarityFunction, TimeDistributed, TextFieldEmbedder, MatrixAttention
-from allennlp.modules.matrix_attention import bilinear_matrix_attention
 from allennlp.nn import util, InitializerApplicator, RegularizerApplicator
 from allennlp.training.metrics import BooleanAccuracy, CategoricalAccuracy, SquadEmAndF1
+
+from my_library.modules.self_attentive_sentence_encoder import SelfAttentiveSpanExtractor
 
 
 @Model.register("hotpot_legacy")
@@ -40,6 +42,7 @@ class BidirectionalAttentionFlow(Model):
         self._type_encoder = type_encoder
         self._self_attention_layer = self_attention_layer
         self._matrix_attention = matrix_attention
+        self._attentive_span_extractor = SelfAttentiveSpanExtractor(input_dim=modeling_layer.get_output_dim())
         self._strong_sup = strong_sup
 
         encoding_dim = span_start_encoder.get_output_dim()
@@ -76,10 +79,11 @@ class BidirectionalAttentionFlow(Model):
                 passage: Dict[str, torch.LongTensor],
                 span_start: torch.IntTensor = None,
                 span_end: torch.IntTensor = None,
+                sentence_spans: torch.IntTensor = None,
                 q_type: torch.IntTensor = None,
                 sp_mask: torch.IntTensor = None,
                 metadata: List[Dict[str, Any]] = None) -> Dict[str, torch.Tensor]:
-
+        print(sentence_spans.shape)
         embedded_question = self._text_field_embedder(question)
         embedded_passage = self._text_field_embedder(passage)
         batch_size = embedded_question.size(0)
@@ -94,7 +98,8 @@ class BidirectionalAttentionFlow(Model):
         modeled_passage = self.linear_1(modeled_passage)
         modeled_passage = self._modeling_layer(modeled_passage, context_mask)
 
-
+        attended_sent_embeddings = self._attentive_span_extractor(modeled_passage, sentence_spans)
+        # print(attended_sent_embeddings.shape)
         # print(gate[0])
         # print(sp_mask[0])
 
@@ -102,16 +107,6 @@ class BidirectionalAttentionFlow(Model):
         #     if q == 1.0:
         #         print(p, q)
         # print(torch.chunk(gate, 2, dim=-1)[0])
-
-
-        # print(gate)
-        # strong_sup_loss1 = torch.mean(-torch.log(torch.sum(gate.unsqueeze(-1) * sp_mask, -1) /
-        #                                          torch.sum(sp_mask, -1)))
-        # strong_sup_loss2 = torch.mean(-torch.log(torch.sum((1-gate).unsqueeze(-1) * (1-sp_mask), -1) /
-        #                                          torch.sum((1-sp_mask), -1)))
-        #
-
-        # print('\n strong_sup_loss2:', strong_sup_loss2)
 
         if self._strong_sup:
             self_att_passage = self._self_attention_layer(modeled_passage, context_mask, sp_mask)

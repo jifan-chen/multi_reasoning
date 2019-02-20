@@ -5,7 +5,7 @@ import re
 from typing import Dict, List, Tuple, Any
 from collections import Counter
 from overrides import overrides
-from allennlp.data.fields import Field, TextField, IndexField, ArrayField, \
+from allennlp.data.fields import Field, TextField, IndexField, ArrayField, SpanField, \
     MetadataField, LabelField, ListField, SequenceLabelField
 from allennlp.common.file_utils import cached_path
 from allennlp.data.dataset_readers.dataset_reader import DatasetReader
@@ -13,7 +13,7 @@ from allennlp.data.instance import Instance
 from allennlp.data.dataset_readers.reading_comprehension import util
 from allennlp.data.token_indexers import SingleIdTokenIndexer, TokenIndexer
 from allennlp.data.tokenizers import Token, Tokenizer, WordTokenizer
-
+from spacy.tokens import Token
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
 
@@ -23,9 +23,11 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
                                         passage_text: str,
                                         token_spans: List[Tuple[int, int]] = None,
                                         token_spans_sp: List[Tuple[int, int]] = None,
+                                        token_spans_sent: List[Tuple[int, int]] = None,
                                         answer_texts: List[str] = None,
+                                        passage_offsets: List[Tuple] = None,
                                         additional_metadata: Dict[str, Any] = None,
-                                        para_limit: int = 2000) -> Instance:
+                                        para_limit: int = 2250) -> Instance:
     """
     Converts a question, a passage, and an optional answer (or answers) to an ``Instance`` for use
     in a reading comprehension model.
@@ -68,7 +70,6 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
     """
     additional_metadata = additional_metadata or {}
     fields: Dict[str, Field] = {}
-    passage_offsets = [(token.idx, token.idx + len(token.text)) for token in passage_tokens]
 
     limit = len(passage_tokens) if para_limit > len(passage_tokens) else para_limit
     passage_tokens = passage_tokens[:limit]
@@ -76,6 +77,13 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
     passage_field = TextField(passage_tokens, token_indexers)
     fields['passage'] = passage_field
     fields['question'] = TextField(question_tokens, token_indexers)
+    sent_spans: List[Field] = []
+    if token_spans_sent:
+        for start, end in token_spans_sent:
+            if start < para_limit and end < para_limit:
+                sent_spans.append(SpanField(start, end, passage_field))
+    fields['sentence_spans'] = ListField(sent_spans)
+
     metadata = {'original_passage': passage_text, 'token_offsets': passage_offsets,
                 'question_tokens': [token.text for token in question_tokens],
                 'passage_tokens': [token.text for token in passage_tokens]}
@@ -157,7 +165,8 @@ class HotpotDatasetReader(DatasetReader):
     def __init__(self,
                  tokenizer: Tokenizer = None,
                  token_indexers: Dict[str, TokenIndexer] = None,
-                 para_limit: int = 2000,
+                 para_limit: int = 2250,
+                 sent_limit: int = 80,
                  lazy: bool = False) -> None:
         super().__init__(lazy)
         self._tokenizer = tokenizer or WordTokenizer()
@@ -185,23 +194,33 @@ class HotpotDatasetReader(DatasetReader):
 
         for article in dataset:
             paragraphs = article['context']
-            concat_article = []
+            concat_article = ""
+            passage_tokens = []
             supporting_facts = []
+            passage_offsets = []
+            sent_starts = []
+            sent_ends = []
             sp_set = set(list(map(tuple, article['supporting_facts'])))
 
             for para in paragraphs:
                 cur_title, cur_para = para[0], para[1]
-                p = []
-                for sent_id, sent in enumerate(cur_para[:3]):
-                    p.append(sent)
+                for sent_id, sent in enumerate(cur_para):
+                    tokenized_sent = self._tokenizer.tokenize(sent)
+                    sent_offset = [(tk.idx + len(concat_article),
+                                    tk.idx + len(tk.text) + len(concat_article)) for tk in tokenized_sent]
+                    if sent_offset:
+                        sent_start = sent_offset[0][0]
+                        sent_end = sent_offset[-1][1]
+                        # sent_start = tokenized_sent[0].idx + len(concat_article)
+                        # sent_end = sent_start + len(sent) - 1
+                        sent_starts.append(sent_start)
+                        sent_ends.append(sent_end)
+                    passage_offsets.extend(sent_offset)
+                    concat_article += sent
+                    passage_tokens.extend(tokenized_sent)
                     if (cur_title, sent_id) in sp_set:
                         supporting_facts.append(sent)
-                # p = "__START__ {} __END__".format(" ".join(p))
-                p = " ".join(p)
-                concat_article += [p]
-            concat_article = " ".join(concat_article)
 
-            # print('context:', test)
             question_text = article['question'].strip().replace("\n", "")
             answer_text = article['answer'].strip().replace("\n", "")
             span_starts = self.find_all_span_starts(answer_text, concat_article)
@@ -219,8 +238,10 @@ class HotpotDatasetReader(DatasetReader):
                                              concat_article,
                                              zip(span_starts, span_ends),
                                              zip(sp_starts, sp_ends),
+                                             zip(sent_starts, sent_ends),
                                              [answer_text],
-                                             None)
+                                             passage_tokens,
+                                             passage_offsets)
             # print('supporting_facts:', supporting_facts)
             # print(instance)
             # print(instance["span_start"])
@@ -234,8 +255,10 @@ class HotpotDatasetReader(DatasetReader):
                          passage_text: str,
                          char_spans: List[Tuple[int, int]] = None,
                          char_spans_sp: List[Tuple[int, int]] = None,
+                         char_spans_sent: List[Tuple[int, int]] = None,
                          answer_texts: List[str] = None,
-                         passage_tokens: List[Token] = None) -> Instance:
+                         passage_tokens: List[Token] = None,
+                         passage_offsets: List[Tuple] = None) -> Instance:
         # pylint: disable=arguments-differ
         if not passage_tokens:
             passage_tokens = self._tokenizer.tokenize(passage_text)
@@ -247,8 +270,7 @@ class HotpotDatasetReader(DatasetReader):
         # `passage_tokens`, as the latter is what we'll actually use for supervision.
         token_spans: List[Tuple[int, int]] = []
         token_spans_sp: List[Tuple[int, int]] = []
-
-        passage_offsets = [(token.idx, token.idx + len(token.text)) for token in passage_tokens]
+        token_spans_sent: List[Tuple[int, int]] = []
 
         for char_span_start, char_span_end in char_spans:
             (span_start, span_end), error = util.char_span_to_token_span(passage_offsets,
@@ -262,22 +284,29 @@ class HotpotDatasetReader(DatasetReader):
                 logger.debug("Tokens in answer: %s", passage_tokens[span_start:span_end + 1])
                 logger.debug("Answer: %s", passage_text[char_span_start:char_span_end])
             token_spans.append((span_start, span_end))
-
+            # print("char answer:", passage_text[char_span_start:char_span_end])
+            # print("Answer:", passage_tokens[span_start:span_end+1])
+            # print(answer_texts)
         for char_span_sp_start, char_span_sp_end in char_spans_sp:
             (span_start_sp, span_end_sp), error = util.char_span_to_token_span(passage_offsets,
                                                                                (char_span_sp_start, char_span_sp_end))
             token_spans_sp.append((span_start_sp, span_end_sp))
 
-        # print('token_spans:', token_spans_sp)
+        for char_span_sent_start, char_span_sent_end in char_spans_sent:
+            (span_start_sent, span_end_sent), error = util.char_span_to_token_span(passage_offsets,
+                                                                            (char_span_sent_start, char_span_sent_end))
+            token_spans_sent.append((span_start_sent, span_end_sent))
 
-        # print('context length:', len(passage_tokens))
         return make_reading_comprehension_instance(self._tokenizer.tokenize(question_text),
                                                    passage_tokens,
                                                    self._token_indexers,
                                                    passage_text,
                                                    token_spans,
                                                    token_spans_sp,
-                                                   answer_texts)
+                                                   token_spans_sent,
+                                                   answer_texts,
+                                                   passage_offsets,
+                                                   para_limit=self._para_limit)
 
 
 if __name__ == '__main__':
