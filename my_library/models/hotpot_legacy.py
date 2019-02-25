@@ -85,7 +85,7 @@ class BidirectionalAttentionFlow(Model):
                 sentence_spans: torch.IntTensor = None,
                 q_type: torch.IntTensor = None,
                 sp_mask: torch.IntTensor = None,
-                dep_mask: torch.IntTensor = None,
+                sentence_dep_masks: torch.IntTensor = None,
                 metadata: List[Dict[str, Any]] = None) -> Dict[str, torch.Tensor]:
 
         embedded_question = self._text_field_embedder(question)
