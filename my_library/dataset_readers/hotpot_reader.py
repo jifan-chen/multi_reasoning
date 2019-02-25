@@ -26,6 +26,7 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
                                         token_spans_sent: List[Tuple[int, int]] = None,
                                         answer_texts: List[str] = None,
                                         passage_offsets: List[Tuple] = None,
+                                        passage_dep_heads: List[int] = None,
                                         additional_metadata: Dict[str, Any] = None,
                                         para_limit: int = 2250) -> Instance:
     """
@@ -61,6 +62,8 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
         exactly one answer per question, but the dev and test sets have several.  TriviaQA has many
         possible answers, which are the aliases for the known correct entity.  This is put into the
         metadata for use with official evaluation scripts, but not used anywhere else.
+    passage_dep_heads : ``List[int]``, optional
+        The dependency parents for each token in the passage, zero-indexing.
     additional_metadata : ``Dict[str, Any]``, optional
         The constructed ``metadata`` field will by default contain ``original_passage``,
         ``token_offsets``, ``question_tokens``, ``passage_tokens``, and ``answer_texts`` keys.  If
@@ -136,7 +139,16 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
     else:
         sp_mask = np.ones(len(passage_tokens))
 
+    if passage_dep_heads:
+        dep_mask = np.zeros((len(passage_tokens), len(passage_tokens)))
+        valid_heads = [h for h in passage_dep_heads[:limit] if 0 <= h < limit]
+        valid_childs = [i for i, h in enumerate(passage_dep_heads[:limit]) if 0 <= h < limit]
+        dep_mask[valid_heads+valid_childs, valid_childs+valid_heads] = 1
+    else:
+        dep_mask = np.ones((len(passage_tokens), len(passage_tokens)))
+
     fields['sp_mask'] = ArrayField(sp_mask)
+    fields['dep_mask'] = ArrayField(dep_mask)
     metadata.update(additional_metadata)
     fields['metadata'] = MetadataField(metadata)
     return Instance(fields)
@@ -194,6 +206,7 @@ class HotpotDatasetReader(DatasetReader):
 
         for article in dataset:
             paragraphs = article['context']
+            dependency_paragraphs = article['golden_head']
             concat_article = ""
             passage_tokens = []
             supporting_facts = []
@@ -201,10 +214,17 @@ class HotpotDatasetReader(DatasetReader):
             sent_starts = []
             sent_ends = []
             sp_set = set(list(map(tuple, article['supporting_facts'])))
+            passage_dep_heads = []
 
-            for para in paragraphs:
+            for para, dep_para in zip(paragraphs, dependency_paragraphs):
                 cur_title, cur_para = para[0], para[1]
-                for sent_id, sent in enumerate(cur_para):
+                dep_title, cur_dep_para = dep_para[0], dep_para[1]
+                assert cur_title == dep_title, "Not equal: %s, %s" % (cur_title, dep_title)
+                for sent_id, (sent, dep_heads) in enumerate(zip(cur_para, cur_dep_para)):
+                    # heads are 1-indexing, so shifted by 1 and add the sentence offset
+                    dep_heads = [h-1+len(passage_tokens) if h > 0 else -1 for h in dep_heads]
+                    passage_dep_heads.extend(dep_heads)
+
                     tokenized_sent = self._tokenizer.tokenize(sent)
                     sent_offset = [(tk.idx + len(concat_article),
                                     tk.idx + len(tk.text) + len(concat_article)) for tk in tokenized_sent]
@@ -241,7 +261,8 @@ class HotpotDatasetReader(DatasetReader):
                                              zip(sent_starts, sent_ends),
                                              [answer_text],
                                              passage_tokens,
-                                             passage_offsets)
+                                             passage_offsets,
+                                             passage_dep_heads)
             # print('supporting_facts:', supporting_facts)
             # print(instance)
             # print(instance["span_start"])
@@ -258,7 +279,8 @@ class HotpotDatasetReader(DatasetReader):
                          char_spans_sent: List[Tuple[int, int]] = None,
                          answer_texts: List[str] = None,
                          passage_tokens: List[Token] = None,
-                         passage_offsets: List[Tuple] = None) -> Instance:
+                         passage_offsets: List[Tuple] = None,
+                         passage_dep_heads: List[int] = None) -> Instance:
         # pylint: disable=arguments-differ
         if not passage_tokens:
             passage_tokens = self._tokenizer.tokenize(passage_text)
@@ -306,6 +328,7 @@ class HotpotDatasetReader(DatasetReader):
                                                    token_spans_sent,
                                                    answer_texts,
                                                    passage_offsets,
+                                                   passage_dep_heads,
                                                    para_limit=self._para_limit)
 
 
