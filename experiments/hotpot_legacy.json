@@ -38,7 +38,7 @@
   },
 
   "train_data_path": "/backup2/jfchen/data/hotpot/hotpot_test.json",
-  "validation_data_path": "/backup2/jfchen/data/hotpot/hotpot_test.json",
+  "validation_data_path": "/backup2/jfchen/data/hotpot/hotpot_dev_distractor_v1.json",
 
   "model": {
     "type": "hotpot_legacy",
@@ -115,6 +115,16 @@
       "dropout": 0.0
     },
 
+    "span_self_attentive_encoder": {
+      "type": "stacked_self_attention",
+      "num_attention_heads": 2,
+      "input_dim": 200,
+      "hidden_dim": 200,
+      "projection_dim": 200,
+      "feedforward_hidden_dim": 200,
+      "num_layers": 1
+    },
+
     "type_encoder": {
       "type": "gru",
       "bidirectional": true,
@@ -138,12 +148,12 @@
     "type": "bucket",
     "sorting_keys": [["passage", "num_tokens"]],
     "max_instances_in_memory": 20000,
-    "batch_size": 20
+    "batch_size": 10
   },
 
   "validation_iterator": {
     "type": "basic",
-    "batch_size": 20
+    "batch_size": 10
   },
 
   "trainer": {
