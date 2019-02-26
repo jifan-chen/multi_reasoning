@@ -222,9 +222,6 @@ class HotpotDatasetReader(DatasetReader):
                 dep_title, cur_dep_para = dep_para[0], dep_para[1]
                 assert cur_title == dep_title, "Not equal: %s, %s" % (cur_title, dep_title)
                 for sent_id, (sent, dep_heads) in enumerate(zip(cur_para, cur_dep_para)):
-                    # heads are 1-indexing, so shifted by 1
-                    dep_heads = [h-1 for h in dep_heads]
-                    sent_dep_heads.append(dep_heads)
 
                     tokenized_sent = self._tokenizer.tokenize(sent)
                     sent_offset = [(tk.idx + len(concat_article),
@@ -236,6 +233,9 @@ class HotpotDatasetReader(DatasetReader):
                         # sent_end = sent_start + len(sent) - 1
                         sent_starts.append(sent_start)
                         sent_ends.append(sent_end)
+                        # heads are 1-indexing, so shifted by 1
+                        dep_heads = [h-1 for h in dep_heads]
+                        sent_dep_heads.append(dep_heads)
                     passage_offsets.extend(sent_offset)
                     concat_article += sent
                     passage_tokens.extend(tokenized_sent)
