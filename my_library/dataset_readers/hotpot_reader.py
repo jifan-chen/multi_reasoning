@@ -6,7 +6,7 @@ from typing import Dict, List, Tuple, Any
 from collections import Counter
 from overrides import overrides
 from allennlp.data.fields import Field, TextField, IndexField, ArrayField, SpanField, \
-    MetadataField, LabelField, ListField, SequenceLabelField
+    MetadataField, LabelField, ListField, AdjacencyField, SequenceLabelField
 from allennlp.common.file_utils import cached_path
 from allennlp.data.dataset_readers.dataset_reader import DatasetReader
 from allennlp.data.instance import Instance
@@ -24,9 +24,10 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
                                         token_spans: List[Tuple[int, int]] = None,
                                         token_spans_sp: List[Tuple[int, int]] = None,
                                         token_spans_sent: List[Tuple[int, int]] = None,
+                                        sent_labels: List[int] = None,
                                         answer_texts: List[str] = None,
                                         passage_offsets: List[Tuple] = None,
-                                        passage_dep_heads: List[int] = None,
+                                        passage_dep_heads: List[Tuple[int, int]] = None,
                                         additional_metadata: Dict[str, Any] = None,
                                         para_limit: int = 2250) -> Instance:
     """
@@ -137,16 +138,17 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
     else:
         sp_mask = np.ones(len(passage_tokens))
 
-    if passage_dep_heads:
-        dep_mask = np.zeros((len(passage_tokens), len(passage_tokens)))
-        valid_heads = [h for h in passage_dep_heads[:limit] if 0 <= h < limit]
-        valid_childs = [i for i, h in enumerate(passage_dep_heads[:limit]) if 0 <= h < limit]
-        dep_mask[valid_heads+valid_childs, valid_childs+valid_heads] = 1
-    else:
-        dep_mask = np.ones((len(passage_tokens), len(passage_tokens)))
+    # if passage_dep_heads:
+    #     dep_mask = np.zeros((len(passage_tokens), len(passage_tokens)))
+    #     valid_heads = [h for h in passage_dep_heads[:limit] if 0 <= h < limit]
+    #     valid_childs = [i for i, h in enumerate(passage_dep_heads[:limit]) if 0 <= h < limit]
+    #     dep_mask[valid_heads+valid_childs, valid_childs+valid_heads] = 1
+    # else:
+    #     dep_mask = np.ones((len(passage_tokens), len(passage_tokens)))
 
     fields['sp_mask'] = ArrayField(sp_mask)
-    fields['dep_mask'] = ArrayField(dep_mask)
+    fields['sent_labels'] = ArrayField(sent_labels)
+    # fields['dep_mask'] = AdjacencyField(passage_dep_heads, passage_field, padding_value=0)
     metadata.update(additional_metadata)
     fields['metadata'] = MetadataField(metadata)
     return Instance(fields)
@@ -192,6 +194,10 @@ class HotpotDatasetReader(DatasetReader):
     def find_span_starts(span, context):
         return re.search(re.escape(span), context).start()
 
+    @staticmethod
+    def get_all_dep_pairs(heads):
+        pass
+
     @overrides
     def _read(self, file_path: str):
         # if `file_path` is a URL, redirect to the cache
@@ -211,6 +217,7 @@ class HotpotDatasetReader(DatasetReader):
             passage_offsets = []
             sent_starts = []
             sent_ends = []
+            sent_labels = []
             sp_set = set(list(map(tuple, article['supporting_facts'])))
             passage_dep_heads = []
 
@@ -220,8 +227,15 @@ class HotpotDatasetReader(DatasetReader):
                 assert cur_title == dep_title, "Not equal: %s, %s" % (cur_title, dep_title)
                 for sent_id, (sent, dep_heads) in enumerate(zip(cur_para, cur_dep_para)):
                     # heads are 1-indexing, so shifted by 1 and add the sentence offset
-                    dep_heads = [h-1+len(passage_tokens) if h > 0 else -1 for h in dep_heads]
-                    passage_dep_heads.extend(dep_heads)
+                    dep_heads_tmp = []
+                    for idx, h in enumerate(dep_heads):
+                        if 0 < h - 1 + len(passage_tokens) < self._para_limit and idx+len(passage_tokens) < self._para_limit:
+                            # print(idx, h)
+                            dep_heads_tmp.append((idx + len(passage_tokens), h - 1 + len(passage_tokens)))
+                        elif h <= 0 and idx+len(passage_tokens) < self._para_limit:
+                            dep_heads_tmp.append((idx+len(passage_tokens), idx+len(passage_tokens)))
+
+                    passage_dep_heads.extend(dep_heads_tmp)
 
                     tokenized_sent = self._tokenizer.tokenize(sent)
                     sent_offset = [(tk.idx + len(concat_article),
@@ -229,8 +243,6 @@ class HotpotDatasetReader(DatasetReader):
                     if sent_offset:
                         sent_start = sent_offset[0][0]
                         sent_end = sent_offset[-1][1]
-                        # sent_start = tokenized_sent[0].idx + len(concat_article)
-                        # sent_end = sent_start + len(sent) - 1
                         sent_starts.append(sent_start)
                         sent_ends.append(sent_end)
                     passage_offsets.extend(sent_offset)
@@ -238,6 +250,9 @@ class HotpotDatasetReader(DatasetReader):
                     passage_tokens.extend(tokenized_sent)
                     if (cur_title, sent_id) in sp_set:
                         supporting_facts.append(sent)
+                        sent_labels.append(1)
+                    else:
+                        sent_labels.append(0)
 
             question_text = article['question'].strip().replace("\n", "")
             answer_text = article['answer'].strip().replace("\n", "")
@@ -257,6 +272,7 @@ class HotpotDatasetReader(DatasetReader):
                                              zip(span_starts, span_ends),
                                              zip(sp_starts, sp_ends),
                                              zip(sent_starts, sent_ends),
+                                             sent_labels,
                                              [answer_text],
                                              passage_tokens,
                                              passage_offsets,
@@ -275,10 +291,11 @@ class HotpotDatasetReader(DatasetReader):
                          char_spans: List[Tuple[int, int]] = None,
                          char_spans_sp: List[Tuple[int, int]] = None,
                          char_spans_sent: List[Tuple[int, int]] = None,
+                         sent_labels: List[int] = None,
                          answer_texts: List[str] = None,
                          passage_tokens: List[Token] = None,
                          passage_offsets: List[Tuple] = None,
-                         passage_dep_heads: List[int] = None) -> Instance:
+                         passage_dep_heads: List[Tuple[int, int]] = None) -> Instance:
         # pylint: disable=arguments-differ
         if not passage_tokens:
             passage_tokens = self._tokenizer.tokenize(passage_text)
@@ -324,6 +341,7 @@ class HotpotDatasetReader(DatasetReader):
                                                    token_spans,
                                                    token_spans_sp,
                                                    token_spans_sent,
+                                                   sent_labels,
                                                    answer_texts,
                                                    passage_offsets,
                                                    passage_dep_heads,

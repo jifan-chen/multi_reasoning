@@ -78,8 +78,7 @@ class SelfAttentiveSpanExtractor(SpanExtractor):
     """
     def __init__(self,
                  input_dim: int,
-                 span_self_attentive_encoder: Seq2SeqEncoder,
-                 dep_masks: torch.IntTensor = None) -> None:
+                 span_self_attentive_encoder: Seq2SeqEncoder) -> None:
         super().__init__()
         self._input_dim = input_dim
         self._global_attention = TimeDistributed(torch.nn.Linear(input_dim, 1))
@@ -96,7 +95,8 @@ class SelfAttentiveSpanExtractor(SpanExtractor):
                 sequence_tensor: torch.FloatTensor,
                 span_indices: torch.LongTensor,
                 sequence_mask: torch.LongTensor = None,
-                span_indices_mask: torch.LongTensor = None) -> torch.FloatTensor:
+                span_indices_mask: torch.LongTensor = None,
+                dep_masks: torch.IntTensor = None) -> torch.FloatTensor:
         # print(sequence_tensor.shape)
         # print(span_indices)
         # for x in span_indices:
@@ -149,9 +149,17 @@ class SelfAttentiveSpanExtractor(SpanExtractor):
         batch_size, num_spans, max_batch_span_width = span_indices.size()
         span_embeddings = util.batched_index_select(sequence_tensor, span_indices, flat_span_indices)\
             .view(batch_size * num_spans, max_batch_span_width, -1)
-        span_dep_masks = util.batched_index_select(span_indices_mask, span_indices, flat_span_indices)\
+        span_dep_masks = util.batched_index_select(dep_masks, span_indices, flat_span_indices)\
             .view(batch_size * num_spans, max_batch_span_width, -1)
-        print('span_dep_masks:', span_dep_masks)
+        # print('passage_length:', sequence_tensor.shape)
+        # print(span_embeddings.shape)
+        # print('span_dep_masks:', span_dep_masks.shape)
+        # for e in dep_masks[0][0]:
+        #     print(e.data.cpu().numpy(), end=' ')
+        #
+        # print('*' * 20)
+        # for e in span_dep_masks[0][0]:
+        #     print(e.data.cpu().numpy(), end=' ')
         attended_span_embeddings = self._span_self_attentive_encoder(span_embeddings,
                                                                      span_mask.view(batch_size * num_spans, -1))
 

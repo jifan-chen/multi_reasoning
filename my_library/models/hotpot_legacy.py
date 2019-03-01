@@ -83,11 +83,14 @@ class BidirectionalAttentionFlow(Model):
                 span_start: torch.IntTensor = None,
                 span_end: torch.IntTensor = None,
                 sentence_spans: torch.IntTensor = None,
+                sent_labels: torch.IntTensor = None,
                 q_type: torch.IntTensor = None,
                 sp_mask: torch.IntTensor = None,
-                dep_mask: torch.IntTensor = None,
+                # dep_mask: torch.IntTensor = None,
                 metadata: List[Dict[str, Any]] = None) -> Dict[str, torch.Tensor]:
-
+        # print(torch.sum(dep_mask, dim=-1))
+        print(sent_labels.shape)
+        print(sent_labels)
         embedded_question = self._text_field_embedder(question)
         embedded_passage = self._text_field_embedder(passage)
         batch_size = embedded_question.size(0)
@@ -103,20 +106,15 @@ class BidirectionalAttentionFlow(Model):
         modeled_passage = self.linear_1(modeled_passage)
         modeled_passage = self._modeling_layer(modeled_passage, context_mask)
 
-        attended_sent_embeddings = self._attentive_span_extractor(modeled_passage, sentence_spans)
-        modeled_passage = modeled_passage + attended_sent_embeddings
+        # attended_sent_embeddings = self._attentive_span_extractor(modeled_passage, sentence_spans, dep_masks=dep_mask)
+        # modeled_passage = modeled_passage + attended_sent_embeddings
 
         # print(attended_sent_embeddings.shape)
         # print(gate[0])
         # print(sp_mask[0])
 
-        # for p, q in zip(gate[0], sp_mask[0]):
-        #     if q == 1.0:
-        #         print(p, q)
-        # print(torch.chunk(gate, 2, dim=-1)[0])
-
         if self._strong_sup:
-            self_att_passage = self._self_attention_layer(modeled_passage, context_mask, sp_mask)
+            self_att_passage = self._self_attention_layer(modeled_passage, context_mask)
             modeled_passage = modeled_passage + self_att_passage[0]
             strong_sup_loss = self_att_passage[1]
         else:
@@ -124,14 +122,29 @@ class BidirectionalAttentionFlow(Model):
             # modeled_passage = modeled_passage + \
             #                   self.linear_2(self.self_att(modeled_passage, modeled_passage, context_mask))
 
-        # gate_logit = self.modeled_gate(modeled_passage)
-        #
-        # gate = F.softmax(gate_logit, dim=-1)
-        # nll_loss = nn.NLLLoss()
-        # strong_sup_loss1 = nll_loss(F.log_softmax(gate_logit, dim=-1).view(batch_size * context_lens, -1),
-        #                             sp_mask.long().view(batch_size * context_lens))
-        # print('\n strong_sup_loss1:', strong_sup_loss1)
-        # modeled_passage = torch.chunk(gate, 2, dim=-1)[1] * modeled_passage + modeled_passage
+        gate_logit = self.modeled_gate(modeled_passage)
+        gate = F.softmax(gate_logit, dim=-1)
+        w = torch.Tensor([0.01, 0.99])
+        strong_sup_loss1 = F.nll_loss(F.log_softmax(gate_logit, dim=-1).view(batch_size * context_lens, -1),
+                                      sp_mask.long().view(batch_size * context_lens))
+        print('\n strong_sup_loss1:', strong_sup_loss1, w)
+        modeled_passage = torch.chunk(gate, 2, dim=-1)[1] * modeled_passage + modeled_passage
+
+        positive_count = 0
+        positive_sum = 0
+        negative_count = 0
+        negative_sum = 0
+        for p, q in zip(gate[0], sp_mask[0]):
+            if q == 1.0:
+                # print(p,q)
+                positive_sum += p[1]
+                positive_count += 1
+            else:
+                negative_sum += p[1]
+                negative_count += 1
+        print('\n pos & neg:', positive_sum / positive_count, negative_sum / negative_count)
+        # print(torch.chunk(gate, 2, dim=-1)[0])
+        # modeled_passage = sp_mask.unsqueeze(-1) * modeled_passage + modeled_passage
 
         output_start = self._span_start_encoder(modeled_passage, context_mask)
         span_start_logits = self.linear_start(output_start).squeeze(2) - 1e30 * (1 - context_mask)
@@ -162,8 +175,9 @@ class BidirectionalAttentionFlow(Model):
                 # self._span_end_accuracy(span_end_logits, span_end.squeeze(-1))
                 # self._span_accuracy(best_span, torch.stack([span_start, span_end], -1))
                 type_loss = nll_loss(util.masked_log_softmax(predict_type, None), q_type)
-                loss = start_loss + end_loss + type_loss
-                # loss = start_loss + end_loss + type_loss + (strong_sup_loss1 * 0.2)
+                # loss = start_loss + end_loss + type_loss
+                # loss = start_loss + end_loss + type_loss + (strong_sup_loss1 * 0.3)
+                loss = strong_sup_loss1
                 if self._strong_sup:
                     loss += strong_sup_loss
                     print('\n strong_sup_loss:', strong_sup_loss)

@@ -137,15 +137,18 @@ class MultiHeadSelfAttentionWithSup(Seq2SeqEncoder):
         attention = masked_softmax(scaled_similarities,
                                    mask.repeat(1, num_heads).view(batch_size * num_heads, timesteps))
         # attention_sp = attention.clone().split(num_heads_strong_sup * batch_size, dim=0)[1]
-        # print('\nmask_sp:', mask_sp.shape)
-        # print(mask_sp.repeat(1, self._num_heads_of_supervision).shape)
-        mask_sp = torch.cat([mask_sp.repeat(1, self._num_heads_of_supervision),
-                            mask.repeat(1, num_heads - self._num_heads_of_supervision)],
-                            dim=-1).view(batch_size * num_heads, 1, timesteps)
+        attention_for_sup, attention_no_sup = torch.split(attention, batch_size, dim=0)
+        # mask_sp = torch.cat([mask_sp.repeat(1, self._num_heads_of_supervision),
+        #                     mask.repeat(1, num_heads - self._num_heads_of_supervision)],
+        #                     dim=-1).view(batch_size * num_heads, 1, timesteps)
+        # print(mask.shape)
         # print(mask_sp.shape)
+        # print(attention_for_sup.shape)
         # print('attention_sp:', attention_sp.shape)
-        loss = torch.mean(-torch.log(torch.sum(attention * mask_sp, dim=-1) + 1e-30))
+        # print(torch.sum(mask_sp, dim=-1)[0][:100])
+        loss = torch.mean(-torch.log(torch.sum(attention_for_sup * mask_sp, dim=-1) + 1e-10))
 
+        attention = torch.cat([attention_for_sup, attention_no_sup], dim=0)
         attention = self._attention_dropout(attention)
 
         # Take a weighted sum of the values with respect to the attention

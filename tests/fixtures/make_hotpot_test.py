@@ -1,8 +1,8 @@
 import json
 
-data_number = 10000
+data_number = 100
 start = 0
-original_path = '/backup2/jfchen/data/hotpot/hotpot_train_v1.json'
+original_path = '/backup2/jfchen/data/hotpot/hotpot/train.json'
 output_url = '/backup2/jfchen/data/hotpot/hotpot_test.json'
 
 original_data = json.load(open(original_path, 'r'))
