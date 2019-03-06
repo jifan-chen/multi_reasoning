@@ -2,12 +2,16 @@
   "dataset_reader": {
     "type": "hotpot_reader",
     "lazy": true,
-    "para_limit": 2000,
+    "para_limit": 2250,
     "token_indexers": {
       "tokens": {
         "type": "single_id",
         "lowercase_tokens": false
       },
+      "elmo": {
+        "type": "elmo_characters"
+      },
+
       "token_characters": {
         "type": "characters",
         "character_tokenizer": {
@@ -21,7 +25,7 @@
   "validation_dataset_reader": {
     "type": "hotpot_reader",
     "lazy": false,
-    "para_limit": 2000,
+    "para_limit": 2250,
     "token_indexers": {
       "tokens": {
         "type": "single_id",
@@ -37,20 +41,31 @@
     }
   },
 
-  "train_data_path": "/scratch/cluster/jfchen/jfchen/data/hotpot/hotpot_train_v1.json",
-  "validation_data_path": "/backup2/jfchen/data/hotpot/hotpot_dev_distractor_v1.json",
+  "train_data_path": "/backup2/jfchen/data/hotpot/hotpot/train.json",
+  "validation_data_path": "/backup2/jfchen/data/hotpot/dev/dev_distractor.json",
 
   "model": {
-    "type": "hotpot",
+    "type": "hotpot_legacy",
+
+    "strong_sup": false,
+
     "text_field_embedder": {
-        "token_embedders": {
-            "tokens": {
-                "type": "embedding",
-                "pretrained_file": "/backup2/jfchen/data/word_emb/glove.840B.300d.txt",
-                "embedding_dim": 300,
-                "trainable": false
-            },
-            "token_characters": {
+      "token_embedders": {
+        "tokens": {
+          "type": "embedding",
+          "pretrained_file": "/backup2/jfchen/data/word_emb/glove.840B.300d.txt",
+          "embedding_dim": 300,
+          "trainable": false
+        },
+        "elmo":{
+                "type": "elmo_token_embedder",
+                "options_file": "https://s3-us-west-2.amazonaws.com/allennlp/models/elmo/2x4096_512_2048cnn_2xhighway/elmo_2x4096_512_2048cnn_2xhighway_options.json",
+                "weight_file": "https://s3-us-west-2.amazonaws.com/allennlp/models/elmo/2x4096_512_2048cnn_2xhighway/elmo_2x4096_512_2048cnn_2xhighway_weights.hdf5",
+                "do_layer_norm": false,
+                "dropout": 0.0
+        },
+
+        "token_characters": {
                 "type": "character_encoding",
                 "embedding": {
                 "num_embeddings": 262,
@@ -62,71 +77,91 @@
                 "num_filters": 100,
                 "ngram_filter_sizes": [5]
                 },
-                "dropout": 0.2
+                "dropout": 0.0
             }
-        }
-    },
 
-    "num_highway_layers": 2,
-
-    "phrase_layer": {
-      "type": "lstm",
-      "bidirectional": true,
-      "input_size": 400,
-      "hidden_size": 100,
-      "num_layers": 1,
-      "dropout": 0.2
-    },
-
-    "matrix_attention": {
-      "type": "linear",
-      "tensor_1_dim": 200,
-      "tensor_2_dim": 200,
-      "combination": "x,y,x*y"
-    },
-
-    "modeling_layer": {
-      "type": "lstm",
-      "bidirectional": true,
-      "input_size": 200,
-      "hidden_size": 100,
-      "num_layers": 1,
-      "dropout": 0.2
-    },
-
-    "span_start_encoder": {
-      "type": "lstm",
-      "bidirectional": true,
-      "input_size": 200,
-      "hidden_size": 100,
-      "num_layers": 1,
-      "dropout": 0.2
+      }
     },
 
     "self_attention_layer":{
-      "type": "multi_head_self_attention",
+      "type": "multi_head_self_attention_with_sup",
       "num_heads": 2,
       "input_dim": 200,
       "attention_dim": 200,
       "values_dim": 200
     },
 
-    "span_end_encoder": {
-      "type": "lstm",
+    "phrase_layer": {
+      "type": "gru",
       "bidirectional": true,
       "input_size": 400,
       "hidden_size": 100,
       "num_layers": 1,
-      "dropout": 0.2
+      "dropout": 0.0
+    },
+
+    "phrase_layer_sp": {
+      "type": "gru",
+      "bidirectional": true,
+      "input_size": 400,
+      "hidden_size": 100,
+      "num_layers": 1,
+      "dropout": 0.0
+    },
+
+    "modeling_layer": {
+      "type": "gru",
+      "bidirectional": true,
+      "input_size": 200,
+      "hidden_size": 100,
+      "num_layers": 1,
+      "dropout": 0.0
+    },
+
+    "modeling_layer_sp": {
+      "type": "gru",
+      "bidirectional": true,
+      "input_size": 200,
+      "hidden_size": 100,
+      "num_layers": 1,
+      "dropout": 0.0
+    },
+
+    "span_start_encoder": {
+      "type": "gru",
+      "bidirectional": true,
+      "input_size": 200,
+      "hidden_size": 100,
+      "num_layers": 1,
+      "dropout": 0.0
+    },
+
+    "span_end_encoder": {
+      "type": "gru",
+      "bidirectional": true,
+      "input_size": 400,
+      "hidden_size": 100,
+      "num_layers": 1,
+      "dropout": 0.0
+    },
+
+    "span_self_attentive_encoder": {
+      "type": "stacked_self_attention",
+      "num_attention_heads": 2,
+      "input_dim": 200,
+      "hidden_dim": 200,
+      "projection_dim": 200,
+      "feedforward_hidden_dim": 200,
+      "num_layers": 1
     },
 
     "type_encoder": {
-      "type": "lstm",
+      "type": "gru",
       "bidirectional": true,
       "input_size": 400,
       "hidden_size": 100,
       "num_layers": 1,
-      "dropout": 0.2
+      "dropout": 0.0
     },
 
     "dropout": 0.2
@@ -134,19 +169,18 @@
 
   "iterator": {
     "type": "bucket",
-    "sorting_keys": [["passage", "num_tokens"], ["question", "num_tokens"]],
+    "sorting_keys": [["passage", "num_tokens"]],
     "max_instances_in_memory": 20000,
-    "batch_size": 12
+    "batch_size": 10
   },
 
   "validation_iterator": {
     "type": "basic",
-    "batch_size": 12
+    "batch_size": 10
   },
 
   "trainer": {
     "num_epochs": 20,
-    "grad_norm": 5.0,
     "patience": 10,
     "validation_metric": "+em",
     "cuda_device": 0,
@@ -158,8 +192,9 @@
     },
 
     "optimizer": {
-      "type": "adam",
-      "betas": [0.9, 0.9]
+      "type": "adam"
+
     }
   }
+
 }

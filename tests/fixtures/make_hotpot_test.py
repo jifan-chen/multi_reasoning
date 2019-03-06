@@ -1,6 +1,6 @@
 import json
 
-data_number = 100
+data_number = 10000
 start = 0
 original_path = '/backup2/jfchen/data/hotpot/hotpot/train.json'
 output_url = '/backup2/jfchen/data/hotpot/hotpot_test.json'

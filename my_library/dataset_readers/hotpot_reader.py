@@ -80,10 +80,17 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
     fields['passage'] = passage_field
     fields['question'] = TextField(question_tokens, token_indexers)
     sent_spans: List[Field] = []
+    sent_labels_: List[Field] = []
     if token_spans_sent:
-        for start, end in token_spans_sent:
+        for (start, end), label in zip(token_spans_sent, sent_labels):
             if start < para_limit and end < para_limit:
                 sent_spans.append(SpanField(start, end, passage_field))
+                sent_labels_.append(LabelField(label, skip_indexing=True))
+            elif start < para_limit and end >= para_limit:
+                sent_spans.append(SpanField(start, para_limit-1, passage_field))
+                sent_labels_.append(LabelField(label, skip_indexing=True))
+
+    fields['sent_labels'] = ListField(sent_labels_)
     fields['sentence_spans'] = ListField(sent_spans)
 
     metadata = {'original_passage': passage_text, 'token_offsets': passage_offsets,
@@ -138,16 +145,7 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
     else:
         sp_mask = np.ones(len(passage_tokens))
 
-    # if passage_dep_heads:
-    #     dep_mask = np.zeros((len(passage_tokens), len(passage_tokens)))
-    #     valid_heads = [h for h in passage_dep_heads[:limit] if 0 <= h < limit]
-    #     valid_childs = [i for i, h in enumerate(passage_dep_heads[:limit]) if 0 <= h < limit]
-    #     dep_mask[valid_heads+valid_childs, valid_childs+valid_heads] = 1
-    # else:
-    #     dep_mask = np.ones((len(passage_tokens), len(passage_tokens)))
-
     fields['sp_mask'] = ArrayField(sp_mask)
-    fields['sent_labels'] = ArrayField(sent_labels)
     # fields['dep_mask'] = AdjacencyField(passage_dep_heads, passage_field, padding_value=0)
     metadata.update(additional_metadata)
     fields['metadata'] = MetadataField(metadata)
