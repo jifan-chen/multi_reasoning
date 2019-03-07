@@ -42,9 +42,7 @@ def gen_dep_map(predicted_heads):
 
 class AllenDepParser:
     def __init__(self, path):
-        archive = load_archive(
-            "https://s3-us-west-2.amazonaws.com/allennlp/models/biaffine-dependency-parser-ptb-2018.08.23.tar.gz",
-            cuda_device=0)
+        archive = load_archive(path, cuda_device=0)
         self.predictor = Predictor.from_archive(archive)
 
     def predict_raw(self, sentence):
@@ -100,8 +98,8 @@ if __name__ == '__main__':
     # which is
     # [
     #    [
-    #        title -> str,
-    #        [head -> List[int], ...]
+    #        title: str,
+    #        [head: List[int], ...]
     #    ],
     #    .
     #    .
@@ -114,8 +112,8 @@ if __name__ == '__main__':
     # which is a list in which each instance is a dictionary
     # {'_id':           The instance id that the ``parsing_info`` is mapped to
     #  'parsing_info':  The parsing results of the instance that has id ``_id`` in hotpot dataset.
-    #                   A list of element [title-> str,
-    #                                      results-> a list of parsing results for sentences in paragraph ``title``
+    #                   A list of element [title: str,
+    #                                      results -> a list of parsing results for sentences in paragraph ``title``
     #                                     ]
     # }
     dep_results = []
