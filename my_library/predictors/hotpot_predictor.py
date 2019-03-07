@@ -1,11 +1,23 @@
 from overrides import overrides
 from allennlp.common.util import JsonDict
-from allennlp.data import Instance
+import json
+from allennlp.data import DatasetReader, Instance
 from allennlp.predictors.predictor import Predictor
+from allennlp.models import Model
 
 
 @Predictor.register('hotpot_predictor')
 class HotpotPredictor(Predictor):
+    @overrides
+    def __init__(self, model: Model, dataset_reader: DatasetReader) -> None:
+        """
+        Override the original init function to load the dataset to memory for demo
+        """
+        self._model = model
+        self._dataset_reader = dataset_reader
+        with open('/scratch/cluster/jfchen/jason/multihopQA/hotpot/test/test_10000_coref.json', 'r') as f:
+            self.demo_dataset = json.load(f)
+
     @overrides
     def _json_to_instance(self, json_dict: JsonDict) -> Instance:
         """
@@ -26,6 +38,24 @@ class HotpotPredictor(Predictor):
         """
         return self._dataset_reader.text_to_instance(**json_dict)
 
+    @overrides
+    def predict_json(self, inputs: JsonDict) -> JsonDict:
+        """
+        Override this function for demo
+        Expects JSON object as ``{"instance_idx" : idx}``
+        """
+        idx = inputs['instance_idx'] % len(self.demo_dataset)
+        hotpot_instance = self.demo_dataset[idx]
+        outputs = self.predict(hotpot_instance)
+        return " ".join(outputs['passage_tokens'])
+
+    def _predict_json(self, inputs: JsonDict) -> JsonDict:
+        """
+        Serve as the substitute for the original ``predict_json``
+        """
+        instance = self._json_to_instance(inputs)
+        return {"passage": self.predict_instance(instance)}
+
     def predict(self, hotpot_instance: JsonDict) -> JsonDict:
         """
         Expects JSON that has the same format of instances in Hotpot dataset
@@ -44,4 +74,4 @@ class HotpotPredictor(Predictor):
                      "coref_clusters":      processed_instance[10],
                      "article_id":          processed_instance[11]
                      }
-        return self.predict_json(json_dict)
+        return self._predict_json(json_dict)
