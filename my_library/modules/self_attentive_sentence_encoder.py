@@ -1,5 +1,7 @@
 import torch
 from overrides import overrides
+from torch import nn
+from torch.nn import functional as F
 
 from allennlp.modules.span_extractors.span_extractor import SpanExtractor
 from allennlp.modules.time_distributed import TimeDistributed
@@ -84,6 +86,12 @@ class SelfAttentiveSpanExtractor(SpanExtractor):
         self._global_attention = TimeDistributed(torch.nn.Linear(input_dim, 1))
         self._span_self_attentive_encoder = span_self_attentive_encoder
 
+        self.modeled_gate = nn.Sequential(
+            nn.Linear(input_dim, 100),
+            nn.ReLU(),
+            nn.Linear(100, 2)
+        )
+
     def get_input_dim(self) -> int:
         return self._input_dim
 
@@ -96,16 +104,14 @@ class SelfAttentiveSpanExtractor(SpanExtractor):
                 span_indices: torch.LongTensor,
                 sequence_mask: torch.LongTensor = None,
                 span_indices_mask: torch.LongTensor = None,
-                dep_masks: torch.IntTensor = None) -> torch.FloatTensor:
-        # print(sequence_tensor.shape)
-        # print(span_indices)
-        # for x in span_indices:
-        #     print(x)
+                dep_masks: torch.IntTensor = None,
+                span_labels: torch.IntTensor = None) -> torch.FloatTensor:
+
         # both of shape (batch_size, num_spans, 1)
         span_starts, span_ends = span_indices.split(1, dim=-1)
+        # Shape: (batch_size, num_spans, 1)
         has_span_mask = (span_starts > -1).float()
 
-        # shape (batch_size, num_spans, 1)
         # These span widths are off by 1, because the span ends are `inclusive`.
         span_widths = span_ends - span_starts
 
@@ -131,10 +137,8 @@ class SelfAttentiveSpanExtractor(SpanExtractor):
         # Shape: (batch_size, num_spans, max_batch_span_width)
         span_mask = (max_span_range_indices <= span_widths).float()
         span_mask = span_mask * has_span_mask
-        # print(torch.sum(span_mask, dim=[-1, -2]))
-        # raw_span_indices = span_ends - max_span_range_indices
         raw_span_indices = span_starts + max_span_range_indices
-        # print('raw_span_indices:', raw_span_indices)
+
         # We also don't want to include span indices which are less than zero,
         # which happens because some spans near the beginning of the sequence
         # have an end index < max_batch_span_width, so we add this to the mask here.
@@ -149,21 +153,39 @@ class SelfAttentiveSpanExtractor(SpanExtractor):
         batch_size, num_spans, max_batch_span_width = span_indices.size()
         span_embeddings = util.batched_index_select(sequence_tensor, span_indices, flat_span_indices)\
             .view(batch_size * num_spans, max_batch_span_width, -1)
-        span_dep_masks = util.batched_index_select(dep_masks, span_indices, flat_span_indices)\
-            .view(batch_size * num_spans, max_batch_span_width, -1)
-        # print('passage_length:', sequence_tensor.shape)
-        # print(span_embeddings.shape)
-        # print('span_dep_masks:', span_dep_masks.shape)
-        # for e in dep_masks[0][0]:
-        #     print(e.data.cpu().numpy(), end=' ')
-        #
-        # print('*' * 20)
-        # for e in span_dep_masks[0][0]:
-        #     print(e.data.cpu().numpy(), end=' ')
-        attended_span_embeddings = self._span_self_attentive_encoder(span_embeddings,
-                                                                     span_mask.view(batch_size * num_spans, -1))
 
-        # print(attended_span_embeddings.shape)
+        # Shape: (batch_size * num_spans, max_batch_sent_length, embedding_dim)
+        # attended_span_embeddings = self._span_self_attentive_encoder(span_embeddings,
+        #                                                              span_mask.view(batch_size * num_spans, -1))
+        attended_span_embeddings = span_embeddings
+        # Shape: (batch_size * num_spans, embedding_dim)
+        max_pooled_span_emb = torch.max(attended_span_embeddings, dim=1)[0]
+        # Shape: (batch_size * num_spans, 2)
+        gate_logit = self.modeled_gate(max_pooled_span_emb)
+        gate = F.softmax(gate_logit, dim=-1)
+        gate = torch.chunk(gate, 2, dim=-1)[1].view(batch_size * num_spans, -1)
+
+        # positive_labels = span_labels.long() * has_span_mask.long().squeeze()
+        # negative_labels = (1 - span_labels.long()) * has_span_mask.long().squeeze()
+        # positive_num = torch.sum(positive_labels)
+        # negative_num = torch.sum(negative_labels)
+
+        # print(positive_labels, negative_labels)
+
+        # print(positive_num, negative_num)
+        # print(torch.sum(gate.float().view(-1) * positive_labels.float().view(-1)) / positive_num.float())
+        # print(torch.sum(gate.float().view(-1) * negative_labels.float().view(-1)) / negative_num.float())
+
+        # print(torch.sum(positive_labels.view(-1) * gate.view(-1)))
+        dumb_gate = torch.full_like(gate.view(batch_size * num_spans, -1).float(), 0.3)
+        new_gate = torch.cat([dumb_gate, gate], dim=-1)
+
+        # gate = (gate >= 0.3).long()
+        # attended_span_embeddings = attended_span_embeddings * gate.unsqueeze(-1).float()
+
+        loss = F.nll_loss(F.log_softmax(gate_logit, dim=-1).view(batch_size * num_spans, -1),
+                          span_labels.long().view(batch_size * num_spans), ignore_index=-1)
+        print('\n strong sup loss', loss)
         # We split the context into sentences and now we want to reconstruct the context using the sentences
         # Shape: (batch_size, num_sentences, max_batch_sent_length, embedding_dim) ->
         # (batch_size, max_batch_context_length, embedding_dim )
@@ -173,8 +195,6 @@ class SelfAttentiveSpanExtractor(SpanExtractor):
             # print(torch.masked_select(slice_embs, m.unsqueeze(-1)).view(-1, 200).shape)
             recovered_indices.append(torch.masked_select(slice_embs, m.unsqueeze(-1)))
         recovered_context_representation = torch.nn.utils.rnn.pad_sequence(recovered_indices, batch_first=True)
-        # print(recovered_context_representation.shape)
         recovered_context_representation = recovered_context_representation.view(batch_size, sequence_tensor.size(1), -1)
-        # print(recovered_context_representation.shape)
 
-        return recovered_context_representation
+        return recovered_context_representation, loss, new_gate

@@ -155,7 +155,6 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
         sp_mask = np.ones(len(passage_tokens))
 
     coref_connections = []
-    '''
     if not coref_clusters is None:
         for c in coref_clusters:
             filtered_c =  [[s, e] for s, e in c if e < limit]
@@ -166,7 +165,6 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
                     coref_connections.append((row_idx, col_idx))
                     coref_connections.append((col_idx, row_idx))
     coref_connections = list(set(coref_connections))
-    '''
 
     fields['sp_mask'] = ArrayField(sp_mask)
     # fields['dep_mask'] = AdjacencyField(passage_dep_heads, passage_field, padding_value=0)
