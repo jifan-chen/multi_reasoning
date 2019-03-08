@@ -44,7 +44,7 @@ class HotpotPredictor(Predictor):
         Override this function for demo
         Expects JSON object as ``{"instance_idx" : idx}``
         """
-        idx = inputs['instance_idx'] % len(self.demo_dataset)
+        idx = int(inputs['instance_idx']) % len(self.demo_dataset)
         hotpot_instance = self.demo_dataset[idx]
         outputs = self.predict(hotpot_instance)
         return " ".join(outputs['passage_tokens'])
@@ -54,7 +54,7 @@ class HotpotPredictor(Predictor):
         Serve as the substitute for the original ``predict_json``
         """
         instance = self._json_to_instance(inputs)
-        return {"passage": self.predict_instance(instance)}
+        return self.predict_instance(instance)
 
     def predict(self, hotpot_instance: JsonDict) -> JsonDict:
         """

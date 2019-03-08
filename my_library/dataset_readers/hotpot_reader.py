@@ -99,12 +99,20 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
     token_spans_sent = [(s, e if e < limit else limit-1) for s, e in token_spans_sent if s < limit]
     token_spans_sp = [(s, e if e < limit else limit-1) for s, e in token_spans_sp if s < limit]
     sent_labels = sent_labels[:len(token_spans_sent)]
+    if not coref_clusters is None:
+        filtered_clusters = []
+        for c in coref_clusters:
+            filtered_c =  [[s, e] for s, e in c if e < limit]
+            if len(filtered_c) > 1:
+                filtered_clusters.append(filtered_c)
+        coref_clusters = filtered_clusters
     metadata = {'original_passage': passage_text, 'token_offsets': passage_offsets,
                 'question_tokens': [token.text for token in question_tokens],
                 'passage_tokens': [token.text for token in passage_tokens],
                 'token_spans_sp': token_spans_sp,
                 'token_spans_sent': token_spans_sent,
-                'sent_labels': sent_labels}
+                'sent_labels': sent_labels,
+                'coref_clusters': coref_clusters}
     if answer_texts:
         metadata['answer_texts'] = answer_texts
 
@@ -157,10 +165,7 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
     coref_connections = []
     if not coref_clusters is None:
         for c in coref_clusters:
-            filtered_c =  [[s, e] for s, e in c if e < limit]
-            if len(filtered_c) < 2:
-                continue
-            for (i_s, i_e), (j_s, j_e) in combinations(filtered_c, 2):
+            for (i_s, i_e), (j_s, j_e) in combinations(c, 2):
                 for row_idx, col_idx in product(range(i_s, i_e+1), range(j_s, j_e+1)):
                     coref_connections.append((row_idx, col_idx))
                     coref_connections.append((col_idx, row_idx))

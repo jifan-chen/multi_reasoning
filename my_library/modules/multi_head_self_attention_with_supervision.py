@@ -5,6 +5,8 @@ from torch.nn import Dropout, Linear
 from allennlp.nn.util import masked_softmax, weighted_sum
 from allennlp.modules.seq2seq_encoders.seq2seq_encoder import Seq2SeqEncoder
 
+from my_library.metrics import AttF1Measure
+
 
 @Seq2SeqEncoder.register("multi_head_self_attention_with_sup")
 class MultiHeadSelfAttentionWithSup(Seq2SeqEncoder):
@@ -80,7 +82,8 @@ class MultiHeadSelfAttentionWithSup(Seq2SeqEncoder):
     def forward(self,  # pylint: disable=arguments-differ
                 inputs: torch.Tensor,
                 mask: torch.LongTensor = None,
-                mask_sp: torch.LongTensor = None) -> torch.FloatTensor:
+                mask_sp: torch.IntTensor = None,
+                att_sup_metric: AttF1Measure = None) -> torch.FloatTensor:
         """
         Parameters
         ----------
@@ -88,8 +91,8 @@ class MultiHeadSelfAttentionWithSup(Seq2SeqEncoder):
             A tensor of shape (batch_size, timesteps, input_dim)
         mask : ``torch.FloatTensor``, optional (default = None).
             A tensor of shape (batch_size, timesteps).
-        mask_sp : ``torch.LongTensor``, optional (default = None).
-            A tensor of shape (batch_size, timesteps)
+        mask_sp : ``torch.IntTensor``, optional (default = None).
+            A tensor of shape (batch_size, timesteps, timesteps)
 
         Returns
         -------
@@ -135,8 +138,11 @@ class MultiHeadSelfAttentionWithSup(Seq2SeqEncoder):
         # attention = masked_softmax(scaled_similarities, mask.repeat(1, num_heads).view(batch_size * num_heads, timesteps))
 
         attention = masked_softmax(scaled_similarities,
-                                   mask.repeat(1, num_heads).view(batch_size * num_heads, timesteps))
+                                   #mask.repeat(1, num_heads).view(batch_size * num_heads, timesteps))
+                                   mask[:, None, :].expand(batch_size, num_heads, timesteps).contiguous().view(batch_size * num_heads, timesteps))
         # attention_sp = attention.clone().split(num_heads_strong_sup * batch_size, dim=0)[1]
+        attention = attention.view(batch_size, num_heads, timesteps, timesteps)
+        attention = attention.transpose(0, 1).contiguous().view(num_heads * batch_size, timesteps, timesteps)
         attention_for_sup, attention_no_sup = torch.split(attention, batch_size, dim=0)
         # mask_sp = torch.cat([mask_sp.repeat(1, self._num_heads_of_supervision),
         #                     mask.repeat(1, num_heads - self._num_heads_of_supervision)],
@@ -146,9 +152,30 @@ class MultiHeadSelfAttentionWithSup(Seq2SeqEncoder):
         # print(attention_for_sup.shape)
         # print('attention_sp:', attention_sp.shape)
         # print(torch.sum(mask_sp, dim=-1)[0][:100])
-        loss = torch.mean(-torch.log(torch.sum(attention_for_sup * mask_sp, dim=-1) + 1e-10))
+        if not mask_sp is None:
+            #loss = torch.mean(-torch.log(torch.sum(attention_for_sup * mask_sp, dim=-1) + 1e-10))
+            square_mask = mask[:, None, :] * mask[:, :, None]
+            mask_sp = (mask_sp * square_mask).float()
+            mask_loss = (torch.sum(mask_sp, dim=-1) > 0).float()
+            num_valid_loss = torch.sum(mask_loss)
+            if num_valid_loss.item() > 0:
+                loss = torch.sum(-torch.log(torch.sum(attention_for_sup * mask_sp, dim=-1) + 1e-10) * mask_loss) / num_valid_loss
+            else:
+                loss = torch.tensor(0.)
+            '''
+            tot = torch.sum(mask_sp.float(), dim=-1, keepdim=True)
+            attention_for_sup = mask_sp.float() / (tot + (tot == 0).float())
+            loss = torch.tensor(0.)
+            '''
+            att_sup_metric(attention_for_sup, mask_sp, square_mask)
+        else:
+            loss = None
 
+        '''
         attention = torch.cat([attention_for_sup, attention_no_sup], dim=0)
+        '''
+        attention = torch.stack([attention_for_sup, attention_no_sup], dim=1)
+        attention = attention.view(batch_size * num_heads, timesteps, timesteps)
         attention = self._attention_dropout(attention)
 
         # Take a weighted sum of the values with respect to the attention
@@ -167,4 +194,4 @@ class MultiHeadSelfAttentionWithSup(Seq2SeqEncoder):
         # Project back to original input size.
         # shape (batch_size, timesteps, input_size)
         outputs = self._output_projection(outputs)
-        return outputs, loss
+        return outputs, loss, attention.view(batch_size, num_heads, timesteps, -1)

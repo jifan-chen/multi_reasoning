@@ -12,10 +12,11 @@ from allennlp.modules import Highway
 from allennlp.modules.span_extractors import EndpointSpanExtractor
 from allennlp.modules import Seq2SeqEncoder, TimeDistributed, TextFieldEmbedder, MatrixAttention
 from allennlp.nn import util, InitializerApplicator, RegularizerApplicator
-from allennlp.training.metrics import F1Measure, SquadEmAndF1
+from allennlp.training.metrics import F1Measure, SquadEmAndF1, Average
 
 from my_library.modules.self_attentive_sentence_encoder import SelfAttentiveSpanExtractor
 from my_library.models.utils import convert_sequence_to_spans, convert_span_to_sequence
+from my_library.metrics import AttF1Measure
 
 
 @Model.register("hotpot_legacy")
@@ -83,6 +84,15 @@ class BidirectionalAttentionFlow(Model):
 
         self._f1_metrics = F1Measure(1)
 
+        self._coref_f1_metric = AttF1Measure(0.1)
+        self._loss_trackers = {'loss': Average(),
+                               'start_loss': Average(),
+                               'end_loss': Average(),
+                               'type_loss': Average(),
+                               'strong_sup_loss': Average()}
+        if self._strong_sup:
+            self._loss_trackers['coref_sup_loss'] = Average()
+
     def forward(self,  # type: ignore
                 question: Dict[str, torch.LongTensor],
                 passage: Dict[str, torch.LongTensor],
@@ -93,8 +103,10 @@ class BidirectionalAttentionFlow(Model):
                 q_type: torch.IntTensor = None,
                 sp_mask: torch.IntTensor = None,
                 # dep_mask: torch.IntTensor = None,
-                coref_mask: torch.IntTensor = None,
+                coref_mask: torch.FloatTensor = None,
                 metadata: List[Dict[str, Any]] = None) -> Dict[str, torch.Tensor]:
+        if not coref_mask is None:
+            coref_mask = coref_mask.long()
 
         embedded_question = self._text_field_embedder(question)
         embedded_passage = self._text_field_embedder(passage)
@@ -126,20 +138,32 @@ class BidirectionalAttentionFlow(Model):
 
         strong_sup_loss = F.nll_loss(F.log_softmax(gate_logit, dim=-1).view(batch_size * num_spans, -1),
                                      sent_labels.long().view(batch_size * num_spans), ignore_index=-1)
-        print('\n strong sup loss', strong_sup_loss)
+        #print('\n strong sup loss', strong_sup_loss)
 
         gate = (gate >= 0.3).long()
         spans_rep = spans_rep * gate.unsqueeze(-1).float()
         attended_sent_embeddings = convert_span_to_sequence(modeled_passage_sp, spans_rep, spans_mask)
 
         modeled_passage = attended_sent_embeddings + modeled_passage
+        ''' No residual, Apply gate on coref_mask
+        modeled_passage = attended_sent_embeddings
+        gate_sent = gate.expand(batch_size * num_spans, max_batch_span_width)
+        gate_sent = convert_span_to_sequence(modeled_passage_sp, gate_sent, spans_mask).squeeze(2)
+        gated_context_mask = context_mask.long() * gate_sent
+        '''
 
         if self._strong_sup:
+            #self_att_passage = self._self_attention_layer(modeled_passage, context_mask)
+            #self_att_passage = self._self_attention_layer(modeled_passage, context_mask, dep_mask)
+            self_att_passage = self._self_attention_layer(modeled_passage, context_mask, coref_mask, self._coref_f1_metric)
+            #self_att_passage = self._self_attention_layer(modeled_passage, gated_context_mask, coref_mask, self._coref_f1_metric)
+            modeled_passage = modeled_passage + self_att_passage[0]
+            coref_sup_loss = self_att_passage[1]
+            self_att_score = self_att_passage[2]
+        else:
             self_att_passage = self._self_attention_layer(modeled_passage, context_mask)
             modeled_passage = modeled_passage + self_att_passage[0]
-            strong_sup_loss = self_att_passage[1]
-        else:
-            pass
+            self_att_score = self_att_passage[2]
             # modeled_passage = modeled_passage + \
             #                   self.linear_2(self.self_att(modeled_passage, modeled_passage, context_mask))
 
@@ -161,6 +185,7 @@ class BidirectionalAttentionFlow(Model):
             "span_start_logits": span_start_logits,
             "span_end_logits": span_end_logits,
             "best_span": best_span,
+            "self_attention_score": self_att_score,
         }
 
         # Compute the loss for training.
@@ -176,9 +201,15 @@ class BidirectionalAttentionFlow(Model):
                 loss = start_loss + end_loss + type_loss + strong_sup_loss
                 # loss = strong_sup_loss
                 if self._strong_sup:
-                    loss += strong_sup_loss
-                    print('\n strong_sup_loss:', strong_sup_loss)
-                print('start_loss:{} end_loss:{} type_loss:{}'.format(start_loss,end_loss,type_loss))
+                    loss += coref_sup_loss
+                    #print('\n strong_sup_loss:', strong_sup_loss)
+                    self._loss_trackers['coref_sup_loss'](coref_sup_loss)
+                #print('start_loss:{} end_loss:{} type_loss:{}'.format(start_loss,end_loss,type_loss))
+                self._loss_trackers['loss'](loss)
+                self._loss_trackers['start_loss'](start_loss)
+                self._loss_trackers['end_loss'](end_loss)
+                self._loss_trackers['type_loss'](type_loss)
+                self._loss_trackers['strong_sup_loss'](strong_sup_loss)
                 output_dict["loss"] = loss
 
             except RuntimeError:
@@ -188,13 +219,24 @@ class BidirectionalAttentionFlow(Model):
         # Compute the EM and F1 on SQuAD and add the tokenized input to the output.
         if metadata is not None:
             output_dict['best_span_str'] = []
+            output_dict['answer_texts'] = []
             question_tokens = []
             passage_tokens = []
+            token_spans_sp = []
+            token_spans_sent = []
+            sent_labels_list = []
+            coref_clusters = []
+            ids = []
             count_yes = 0
             count_no = 0
             for i in range(batch_size):
                 question_tokens.append(metadata[i]['question_tokens'])
                 passage_tokens.append(metadata[i]['passage_tokens'])
+                token_spans_sp.append(metadata[i]['token_spans_sp'])
+                token_spans_sent.append(metadata[i]['token_spans_sent'])
+                sent_labels_list.append(metadata[i]['sent_labels'])
+                coref_clusters.append(metadata[i]['coref_clusters'])
+                ids.append(metadata[i]['_id'])
                 passage_str = metadata[i]['original_passage']
                 offsets = metadata[i]['token_offsets']
                 if type_predicts[i] == 1:
@@ -211,25 +253,38 @@ class BidirectionalAttentionFlow(Model):
 
                 output_dict['best_span_str'].append(best_span_string)
                 answer_texts = metadata[i].get('answer_texts', [])
+                output_dict['answer_texts'].append(answer_texts)
 
                 if answer_texts:
                     self._squad_metrics(best_span_string, answer_texts)
             self._f1_metrics(pred_sent_probs, sent_labels.view(-1))
             output_dict['question_tokens'] = question_tokens
             output_dict['passage_tokens'] = passage_tokens
+            output_dict['token_spans_sp'] = token_spans_sp
+            output_dict['token_spans_sent'] = token_spans_sent
+            output_dict['sent_labels'] = sent_labels_list
+            output_dict['coref_clusters'] = coref_clusters
+            output_dict['_id'] = ids
 
         return output_dict
 
     def get_metrics(self, reset: bool = False) -> Dict[str, float]:
         exact_match, f1_score = self._squad_metrics.get_metric(reset)
         p, r, evidence_f1_socre = self._f1_metrics.get_metric(reset)
-        return {
+        coref_p, coref_r, coref_f1_score = self._coref_f1_metric.get_metric(reset)
+        metrics = {
                 'em': exact_match,
                 'f1': f1_score,
                 'evd_p': p,
                 'evd_r': r,
-                'evd_f1': evidence_f1_socre
+                'evd_f1': evidence_f1_socre,
+                'coref_p': coref_p,
+                'coref_r': coref_r,
+                'core_f1': coref_f1_score,
                 }
+        for name, tracker in self._loss_trackers.items():
+            metrics[name] = tracker.get_metric(reset).item()
+        return metrics
 
     @staticmethod
     def get_best_span(span_start_logits: torch.Tensor, span_end_logits: torch.Tensor) -> torch.Tensor:
