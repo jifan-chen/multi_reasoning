@@ -78,39 +78,19 @@ if __name__ == '__main__':
     #               A list of element [title: str,
     #                                  coref_output: JsonDict -> output from allenCorefPredictor
     #                                 ]
-    #                   
-    #  'pos':       The pos of each sentence.
-    #               A list of element [title: str,
-    #                                  pos: List[List[str]] -> a list of coarse-grained pos for sentences in 
-    #                                                          paragraph ``title``
-    #                                  tag: List[List[str]] -> a list of fine-grained pos for sentences in 
-    #                                                          paragraph ``title``
-    #                                 ]
     # }
     coref_results = []
     for d in tqdm(data):
         coref_info = []
-        poses = []
-        #tags = []
         for title, para in d['context']:
             para_sents_tokens = []
-            #para_poses = [title, []]
-            para_poses = [title, [], []]
-            #para_tags = [title, []]
             for sent in para:
                 sent_toks = tokenizer.split_words(sent)
                 para_sents_tokens.append([tok.text for tok in sent_toks])
-                para_poses[1].append([tok.pos_ for tok in sent_toks])
-                #para_tags[1].append([tok.tag_ for tok in sent_toks])
-                para_poses[2].append([tok.tag_ for tok in sent_toks])
             coref_output = predictor.predict_tokenized_sents(para_sents_tokens)
             coref_info.append([title, coref_output])
-            poses.append(para_poses)
-            #tags.append(para_tags)
         coref_dict = {'_id': d['_id'],
-                      'coref_info': coref_info,
-                      'pos': poses,}
-                      #'tag': tags}
+                      'coref_info': coref_info}
         coref_results.append(coref_dict)
 
     with open(args.coref_output, 'wb') as f:

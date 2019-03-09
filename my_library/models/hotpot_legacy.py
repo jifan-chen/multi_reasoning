@@ -105,8 +105,6 @@ class BidirectionalAttentionFlow(Model):
                 # dep_mask: torch.IntTensor = None,
                 coref_mask: torch.FloatTensor = None,
                 metadata: List[Dict[str, Any]] = None) -> Dict[str, torch.Tensor]:
-        if not coref_mask is None:
-            coref_mask = coref_mask.long()
 
         embedded_question = self._text_field_embedder(question)
         embedded_passage = self._text_field_embedder(passage)

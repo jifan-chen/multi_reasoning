@@ -105,3 +105,6 @@ venv.bak/
 
 # save
 save/*
+
+# demo modules
+demo/node_modules*
