@@ -1,0 +1,1 @@
+from my_library.predictors.hotpot_predictor import HotpotPredictor
