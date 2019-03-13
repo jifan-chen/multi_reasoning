@@ -1,22 +1,34 @@
 {
   "dataset_reader": {
-    "type": "hotpot_reader",
-    "lazy": true,
-    "para_limit": 2250,
-    "token_indexers": {
-      "tokens": {
-        "type": "single_id",
-        "lowercase_tokens": false
+      "type": "multiprocess",
+      "base_reader" : {
+          "type": "hotpot_reader",
+          "lazy": true,
+          "para_limit": 2250,
+          "token_indexers": {
+            "tokens": {
+              "type": "single_id",
+              "lowercase_tokens": false
+            },
+            "token_characters": {
+              "type": "characters",
+              "character_tokenizer": {
+                "byte_encoding": "utf-8"
+              },
+              "min_padding_length": 5
+            }
+          }
       },
-      "token_characters": {
-        "type": "characters",
-        "character_tokenizer": {
-          "byte_encoding": "utf-8"
-        },
-        "min_padding_length": 5
-      }
-    }
+      "num_workers": 2,
+      "output_queue_size": 500
   },
+
+  "datasets_for_vocab_creation": [],
+
+  "vocabulary": {
+    "directory_path": "/backup2/jfchen/data/hotpot/vocab/full",
+    "extend": false
+    },
 
   "validation_dataset_reader": {
     "type": "hotpot_reader",
@@ -37,20 +49,14 @@
     }
   },
 
-  "train_data_path": "/backup2/jfchen/data/hotpot/train/train_coref.json",
+
+  "train_data_path": "/backup2/jfchen/data/hotpot/train/train/train*.json",
   "validation_data_path": "/backup2/jfchen/data/hotpot/dev/dev_distractor_coref.json",
-
-  "datasets_for_vocab_creation": [],
-
-  "vocabulary": {
-    "directory_path": "/backup2/jfchen/data/hotpot/vocab/full",
-    "extend": false
-    },
 
   "model": {
     "type": "hotpot_legacy",
 
-    "strong_sup": false,
+    "strong_sup": true,
 
     "text_field_embedder": {
       "token_embedders": {
@@ -74,7 +80,6 @@
                 },
                 "dropout": 0.0
             }
-
       }
     },
 
@@ -92,7 +97,7 @@
       "input_size": 400,
       "hidden_size": 100,
       "num_layers": 1,
-      "dropout": 0.0
+      "dropout": 0.2
     },
 
     "phrase_layer_sp": {
@@ -101,7 +106,7 @@
       "input_size": 400,
       "hidden_size": 100,
       "num_layers": 1,
-      "dropout": 0.0
+      "dropout": 0.2
     },
 
     "modeling_layer": {
@@ -110,7 +115,7 @@
       "input_size": 200,
       "hidden_size": 100,
       "num_layers": 1,
-      "dropout": 0.0
+      "dropout": 0.2
     },
 
     "modeling_layer_sp": {
@@ -119,7 +124,7 @@
       "input_size": 200,
       "hidden_size": 100,
       "num_layers": 1,
-      "dropout": 0.0
+      "dropout": 0.2
     },
 
     "span_start_encoder": {
@@ -128,7 +133,7 @@
       "input_size": 200,
       "hidden_size": 100,
       "num_layers": 1,
-      "dropout": 0.0
+      "dropout": 0.2
     },
 
     "span_end_encoder": {
@@ -137,7 +142,7 @@
       "input_size": 400,
       "hidden_size": 100,
       "num_layers": 1,
-      "dropout": 0.0
+      "dropout": 0.2
     },
 
     "span_self_attentive_encoder": {
@@ -172,11 +177,11 @@
           "num_tokens"
         ]
       ],
-      "max_instances_in_memory": 20000,
+      "max_instances_in_memory": 500,
       "batch_size": 10
     },
     "num_workers": 4,
-    "output_queue_size": 100
+    "output_queue_size": 50
   },
 
   "validation_iterator": {
@@ -185,7 +190,7 @@
   },
 
   "trainer": {
-    "num_epochs": 20,
+    "num_epochs": 100,
     "patience": 10,
     "validation_metric": "+em",
     "cuda_device": 0,
@@ -193,12 +198,12 @@
       "type": "reduce_on_plateau",
       "factor": 0.5,
       "mode": "max",
-      "patience": 2
+      "patience": 1
     },
 
     "optimizer": {
-      "type": "adam"
-
+      "type": "sgd",
+      "lr": 0.1
     }
   }
 

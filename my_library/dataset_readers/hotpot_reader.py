@@ -2,18 +2,19 @@ import json
 import logging
 import numpy as np
 import re
+from itertools import combinations, product
 from typing import Dict, List, Tuple, Any
 from collections import Counter
 from overrides import overrides
 from allennlp.data.fields import Field, TextField, IndexField, ArrayField, SpanField, \
-    MetadataField, LabelField, ListField, AdjacencyField, SequenceLabelField
+    MetadataField, LabelField, ListField, AdjacencyField
 from allennlp.common.file_utils import cached_path
 from allennlp.data.dataset_readers.dataset_reader import DatasetReader
 from allennlp.data.instance import Instance
 from allennlp.data.dataset_readers.reading_comprehension import util
 from allennlp.data.token_indexers import SingleIdTokenIndexer, TokenIndexer
 from allennlp.data.tokenizers import Token, Tokenizer, WordTokenizer
-from spacy.tokens import Token
+
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
 
@@ -28,6 +29,7 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
                                         answer_texts: List[str] = None,
                                         passage_offsets: List[Tuple] = None,
                                         passage_dep_heads: List[Tuple[int, int]] = None,
+                                        coref_clusters: List[List[List[int]]] = None,
                                         additional_metadata: Dict[str, Any] = None,
                                         para_limit: int = 2250) -> Instance:
     """
@@ -87,15 +89,31 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
                 sent_spans.append(SpanField(start, end, passage_field))
                 sent_labels_.append(LabelField(label, skip_indexing=True))
             elif start < para_limit and end >= para_limit:
-                sent_spans.append(SpanField(start, para_limit-1, passage_field))
+                sent_spans.append(SpanField(start, para_limit - 1, passage_field))
                 sent_labels_.append(LabelField(label, skip_indexing=True))
 
     fields['sent_labels'] = ListField(sent_labels_)
     fields['sentence_spans'] = ListField(sent_spans)
 
+    # filter spans that exceed para limit so that the info in metadata is correct
+    token_spans_sent = [(s, e if e < limit else limit - 1) for s, e in token_spans_sent if s < limit]
+    token_spans_sp = [(s, e if e < limit else limit - 1) for s, e in token_spans_sp if s < limit]
+    sent_labels = sent_labels[:len(token_spans_sent)]
+    if not coref_clusters is None:
+        filtered_clusters = []
+        for c in coref_clusters:
+            filtered_c = [[s, e] for s, e in c if e < limit]
+            if len(filtered_c) > 1:
+                filtered_clusters.append(filtered_c)
+        coref_clusters = filtered_clusters
+
     metadata = {'original_passage': passage_text, 'token_offsets': passage_offsets,
                 'question_tokens': [token.text for token in question_tokens],
-                'passage_tokens': [token.text for token in passage_tokens]}
+                'passage_tokens': [token.text for token in passage_tokens],
+                'token_spans_sp': token_spans_sp,
+                'token_spans_sent': token_spans_sent,
+                'sent_labels': sent_labels,
+                'coref_clusters': coref_clusters}
     if answer_texts:
         metadata['answer_texts'] = answer_texts
 
@@ -113,11 +131,7 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
         fields['q_type'] = LabelField(0, skip_indexing=True)
 
         if token_spans:
-            # There may be multiple answer annotations, so we pick the one that occurs the most.  This
-            # only matters on the SQuAD dev set, and it means our computed metrics ("start_acc",
-            # "end_acc", and "span_acc") aren't quite the same as the official metrics, which look at
-            # all of the annotations.  This is why we have a separate official SQuAD metric calculation
-            # (the "em" and "f1" metrics use the official script).
+
             candidate_answers: Counter = Counter()
             for span_start, span_end in token_spans:
                 candidate_answers[(span_start, span_end)] += 1
@@ -136,8 +150,6 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
             fields['span_start'] = IndexField(-100, passage_field)
             fields['span_end'] = IndexField(-100, passage_field)
 
-    # print('fields:', fields['span_start'], fields['span_end'], fields['q_type'])
-
     if token_spans_sp:
         sp_mask = np.zeros(len(passage_tokens))
         for s, e in token_spans_sp:
@@ -145,8 +157,18 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
     else:
         sp_mask = np.ones(len(passage_tokens))
 
+    coref_connections = []
+    if not coref_clusters is None:
+        for c in coref_clusters:
+            for (i_s, i_e), (j_s, j_e) in combinations(c, 2):
+                for row_idx, col_idx in product(range(i_s, i_e + 1), range(j_s, j_e + 1)):
+                    coref_connections.append((row_idx, col_idx))
+                    coref_connections.append((col_idx, row_idx))
+    coref_connections = list(set(coref_connections))
+
     fields['sp_mask'] = ArrayField(sp_mask)
     # fields['dep_mask'] = AdjacencyField(passage_dep_heads, passage_field, padding_value=0)
+    fields['coref_mask'] = AdjacencyField(coref_connections, passage_field, padding_value=0)
     metadata.update(additional_metadata)
     fields['metadata'] = MetadataField(metadata)
     return Instance(fields)
@@ -172,6 +194,7 @@ class HotpotDatasetReader(DatasetReader):
         We similarly use this for both the question and the passage.  See :class:`TokenIndexer`.
         Default is ``{"tokens": SingleIdTokenIndexer()}``.
     """
+
     def __init__(self,
                  tokenizer: Tokenizer = None,
                  token_indexers: Dict[str, TokenIndexer] = None,
@@ -196,6 +219,82 @@ class HotpotDatasetReader(DatasetReader):
     def get_all_dep_pairs(heads):
         pass
 
+    def process_raw_instance(self, article):
+        article_id = article['_id']
+        paragraphs = article['context']
+        dependency_paragraphs = article['golden_head']
+        coref_clusters = article.get('coref_clusters', None)
+        concat_article = ""
+        passage_tokens = []
+        supporting_facts = []
+        passage_offsets = []
+        sent_starts = []
+        sent_ends = []
+        sent_labels = []
+        sp_set = set(list(map(tuple, article['supporting_facts'])))
+        passage_dep_heads = []
+
+        for para, dep_para in zip(paragraphs, dependency_paragraphs):
+            cur_title, cur_para = para[0], para[1]
+            dep_title, cur_dep_para = dep_para[0], dep_para[1]
+            assert cur_title == dep_title, "Not equal: %s, %s" % (cur_title, dep_title)
+            for sent_id, (sent, dep_heads) in enumerate(zip(cur_para, cur_dep_para)):
+                # heads are 1-indexing, so shifted by 1 and add the sentence offset
+                dep_heads_tmp = []
+                for idx, h in enumerate(dep_heads):
+                    if 0 <= h - 1 + len(passage_tokens) < self._para_limit and idx + len(
+                            passage_tokens) < self._para_limit and 0 <= h - 1:
+                        # print(idx, h)
+                        dep_heads_tmp.append((idx + len(passage_tokens), h - 1 + len(passage_tokens)))
+                    elif h <= 0 and idx + len(passage_tokens) < self._para_limit:
+                        dep_heads_tmp.append((idx + len(passage_tokens), idx + len(passage_tokens)))
+
+                passage_dep_heads.extend(dep_heads_tmp)
+
+                tokenized_sent = self._tokenizer.tokenize(sent)
+                tokenized_sent = [Token(text=tk.text, idx=tk.idx) for tk in tokenized_sent]
+                sent_offset = [(tk.idx + len(concat_article),
+                                tk.idx + len(tk.text) + len(concat_article)) for tk in tokenized_sent]
+                if sent_offset:
+                    sent_start = sent_offset[0][0]
+                    sent_end = sent_offset[-1][1]
+                    sent_starts.append(sent_start)
+                    sent_ends.append(sent_end)
+                    if (cur_title, sent_id) in sp_set:
+                        supporting_facts.append(sent)
+                        sent_labels.append(1)
+                    else:
+                        sent_labels.append(0)
+                passage_offsets.extend(sent_offset)
+                concat_article += sent
+                passage_tokens.extend(tokenized_sent)
+
+        question_text = article['question'].strip().replace("\n", "")
+        answer_text = article['answer'].strip().replace("\n", "")
+        span_starts = self.find_all_span_starts(answer_text, concat_article)
+        # print('article id:', article['_id'])
+        # print('span_starts:', span_starts)
+        if not span_starts:
+            # print(self.count)
+            self.count += 1
+        span_ends = [start + len(answer_text) for start in span_starts]
+        # print('span_ends:', span_ends)
+        sp_starts = [self.find_span_starts(s, concat_article) for s in supporting_facts]
+        sp_ends = [start + len(span) for span, start in zip(supporting_facts, sp_starts)]
+
+        return (question_text,
+                concat_article,
+                zip(span_starts, span_ends),
+                zip(sp_starts, sp_ends),
+                zip(sent_starts, sent_ends),
+                sent_labels,
+                [answer_text],
+                passage_tokens,
+                passage_offsets,
+                passage_dep_heads,
+                coref_clusters,
+                article_id)
+
     @overrides
     def _read(self, file_path: str):
         # if `file_path` is a URL, redirect to the cache
@@ -207,74 +306,8 @@ class HotpotDatasetReader(DatasetReader):
         logger.info("Reading the dataset")
 
         for article in dataset:
-            paragraphs = article['context']
-            dependency_paragraphs = article['golden_head']
-            concat_article = ""
-            passage_tokens = []
-            supporting_facts = []
-            passage_offsets = []
-            sent_starts = []
-            sent_ends = []
-            sent_labels = []
-            sp_set = set(list(map(tuple, article['supporting_facts'])))
-            passage_dep_heads = []
-
-            for para, dep_para in zip(paragraphs, dependency_paragraphs):
-                cur_title, cur_para = para[0], para[1]
-                dep_title, cur_dep_para = dep_para[0], dep_para[1]
-                assert cur_title == dep_title, "Not equal: %s, %s" % (cur_title, dep_title)
-                for sent_id, (sent, dep_heads) in enumerate(zip(cur_para, cur_dep_para)):
-                    # heads are 1-indexing, so shifted by 1 and add the sentence offset
-                    dep_heads_tmp = []
-                    for idx, h in enumerate(dep_heads):
-                        if 0 < h - 1 + len(passage_tokens) < self._para_limit and idx+len(passage_tokens) < self._para_limit:
-                            # print(idx, h)
-                            dep_heads_tmp.append((idx + len(passage_tokens), h - 1 + len(passage_tokens)))
-                        elif h <= 0 and idx+len(passage_tokens) < self._para_limit:
-                            dep_heads_tmp.append((idx+len(passage_tokens), idx+len(passage_tokens)))
-
-                    passage_dep_heads.extend(dep_heads_tmp)
-
-                    tokenized_sent = self._tokenizer.tokenize(sent)
-                    sent_offset = [(tk.idx + len(concat_article),
-                                    tk.idx + len(tk.text) + len(concat_article)) for tk in tokenized_sent]
-                    if sent_offset:
-                        sent_start = sent_offset[0][0]
-                        sent_end = sent_offset[-1][1]
-                        sent_starts.append(sent_start)
-                        sent_ends.append(sent_end)
-                    passage_offsets.extend(sent_offset)
-                    concat_article += sent
-                    passage_tokens.extend(tokenized_sent)
-                    if (cur_title, sent_id) in sp_set:
-                        supporting_facts.append(sent)
-                        sent_labels.append(1)
-                    else:
-                        sent_labels.append(0)
-
-            question_text = article['question'].strip().replace("\n", "")
-            answer_text = article['answer'].strip().replace("\n", "")
-            span_starts = self.find_all_span_starts(answer_text, concat_article)
-            # print('article id:', article['_id'])
-            # print('span_starts:', span_starts)
-            if not span_starts:
-                # print(self.count)
-                self.count += 1
-            span_ends = [start + len(answer_text) for start in span_starts]
-            # print('span_ends:', span_ends)
-            sp_starts = [self.find_span_starts(s, concat_article) for s in supporting_facts]
-            sp_ends = [start + len(span) for span, start in zip(supporting_facts, sp_starts)]
-
-            instance = self.text_to_instance(question_text,
-                                             concat_article,
-                                             zip(span_starts, span_ends),
-                                             zip(sp_starts, sp_ends),
-                                             zip(sent_starts, sent_ends),
-                                             sent_labels,
-                                             [answer_text],
-                                             passage_tokens,
-                                             passage_offsets,
-                                             passage_dep_heads)
+            processed_article = self.process_raw_instance(article)
+            instance = self.text_to_instance(*processed_article)
             # print('supporting_facts:', supporting_facts)
             # print(instance)
             # print(instance["span_start"])
@@ -293,7 +326,9 @@ class HotpotDatasetReader(DatasetReader):
                          answer_texts: List[str] = None,
                          passage_tokens: List[Token] = None,
                          passage_offsets: List[Tuple] = None,
-                         passage_dep_heads: List[Tuple[int, int]] = None) -> Instance:
+                         passage_dep_heads: List[Tuple[int, int]] = None,
+                         coref_clusters: List[List[List[int]]] = None,
+                         article_id: str = None) -> Instance:
         # pylint: disable=arguments-differ
         if not passage_tokens:
             passage_tokens = self._tokenizer.tokenize(passage_text)
@@ -319,9 +354,7 @@ class HotpotDatasetReader(DatasetReader):
                 logger.debug("Tokens in answer: %s", passage_tokens[span_start:span_end + 1])
                 logger.debug("Answer: %s", passage_text[char_span_start:char_span_end])
             token_spans.append((span_start, span_end))
-            # print("char answer:", passage_text[char_span_start:char_span_end])
-            # print("Answer:", passage_tokens[span_start:span_end+1])
-            # print(answer_texts)
+
         for char_span_sp_start, char_span_sp_end in char_spans_sp:
             (span_start_sp, span_end_sp), error = util.char_span_to_token_span(passage_offsets,
                                                                                (char_span_sp_start, char_span_sp_end))
@@ -329,10 +362,14 @@ class HotpotDatasetReader(DatasetReader):
 
         for char_span_sent_start, char_span_sent_end in char_spans_sent:
             (span_start_sent, span_end_sent), error = util.char_span_to_token_span(passage_offsets,
-                                                                            (char_span_sent_start, char_span_sent_end))
+                                                                                   (char_span_sent_start,
+                                                                                    char_span_sent_end))
             token_spans_sent.append((span_start_sent, span_end_sent))
 
-        return make_reading_comprehension_instance(self._tokenizer.tokenize(question_text),
+        tokenized_ques = self._tokenizer.tokenize(question_text)
+        tokenized_ques = [Token(text=tk.text, idx=tk.idx) for tk in tokenized_ques]
+
+        return make_reading_comprehension_instance(tokenized_ques,
                                                    passage_tokens,
                                                    self._token_indexers,
                                                    passage_text,
@@ -343,6 +380,8 @@ class HotpotDatasetReader(DatasetReader):
                                                    answer_texts,
                                                    passage_offsets,
                                                    passage_dep_heads,
+                                                   coref_clusters,
+                                                   additional_metadata={'_id': article_id},
                                                    para_limit=self._para_limit)
 
 
