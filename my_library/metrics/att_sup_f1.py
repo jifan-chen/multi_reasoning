@@ -1,4 +1,3 @@
-
 from typing import Optional
 
 import torch
@@ -41,7 +40,7 @@ class AttF1Measure(Metric):
         attention_scores, gold_labels, mask = self.unwrap_to_tensors(attention_scores, gold_labels, mask)
         if TH is None:
             TH = self._positive_th
-
+        
         if mask is None:
             mask = torch.ones_like(gold_labels)
         mask = mask.float()

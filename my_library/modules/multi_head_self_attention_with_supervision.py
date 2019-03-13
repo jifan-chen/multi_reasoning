@@ -15,9 +15,11 @@ class MultiHeadSelfAttentionWithSup(Seq2SeqEncoder):
     This class implements the key-value scaled dot product attention mechanism
     detailed in the paper `Attention is all you Need
     <https://www.semanticscholar.org/paper/Attention-Is-All-You-Need-Vaswani-Shazeer/0737da0767d77606169cbf4187b83e1ab62f6077>`_ .
+
     The attention mechanism is a weighted sum of a projection V of the inputs, with respect
     to the scaled, normalised dot product of Q and K, which are also both linear projections
     of the input. This procedure is repeated for each attention head, using different parameters.
+
     Parameters
     ----------
     num_heads : ``int``, required.
@@ -91,6 +93,7 @@ class MultiHeadSelfAttentionWithSup(Seq2SeqEncoder):
             A tensor of shape (batch_size, timesteps).
         mask_sp : ``torch.IntTensor``, optional (default = None).
             A tensor of shape (batch_size, timesteps, timesteps)
+
         Returns
         -------
         A tensor of shape (batch_size, timesteps, output_projection_dim),

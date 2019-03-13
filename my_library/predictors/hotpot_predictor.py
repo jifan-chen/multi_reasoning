@@ -8,6 +8,7 @@ from allennlp.tools import squad_eval
 import numpy as np
 
 
+
 def find_att_toks(scores, mask, th, row_offset, conn_type):
     scores = scores * mask
     accept = scores >= th
@@ -68,12 +69,12 @@ class HotpotPredictor(Predictor):
         """
         self._model = model
         self._dataset_reader = dataset_reader
-        # with open('/scratch/cluster/jfchen/jason/multihopQA/hotpot/test/test_10000_coref.json', 'r') as f:
-        #     train = json.load(f)
-        # with open('/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_coref.json', 'r') as f:
-        #     dev = json.load(f)
-        # self.demo_dataset = {'train': train,
-        #                      'dev': dev}
+        with open('/scratch/cluster/jfchen/jason/multihopQA/hotpot/test/test_10000_coref.json', 'r') as f:
+            train = json.load(f)
+        with open('/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_coref.json', 'r') as f:
+            dev = json.load(f)
+        self.demo_dataset = {'train': train,
+                             'dev': dev}
 
     @overrides
     def _json_to_instance(self, json_dict: JsonDict) -> Instance:
