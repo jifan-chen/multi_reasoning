@@ -14,7 +14,7 @@ from my_library.models.utils import convert_sequence_to_spans, convert_span_to_s
 from my_library.metrics import AttF1Measure
 
 
-@Model.register("hotpot_legacy")
+@Model.register("hotpot_decoupled")
 class BidirectionalAttentionFlow(Model):
     def __init__(self, vocab: Vocabulary,
                  text_field_embedder: TextFieldEmbedder,
@@ -102,18 +102,18 @@ class BidirectionalAttentionFlow(Model):
 
         embedded_question = self._text_field_embedder(question)
         embedded_passage = self._text_field_embedder(passage)
+        decoupled_passage, spans_mask = convert_sequence_to_spans(embedded_passage, sentence_spans)
+        batch_size, num_spans, max_batch_span_width = spans_mask.size()
+        encodeded_decoupled_passage = \
+            self._dropout(self._phrase_layer_sp(
+                decoupled_passage, spans_mask.view(batch_size * num_spans, -1)))
+
+        context_output_sp = convert_span_to_sequence(embedded_passage, encodeded_decoupled_passage, spans_mask)
+
         ques_mask = util.get_text_field_mask(question).float()
         context_mask = util.get_text_field_mask(passage).float()
 
-        ques_output = self._dropout(self._phrase_layer(embedded_question, ques_mask))
-        context_output = self._dropout(self._phrase_layer(embedded_passage, context_mask))
-
-        modeled_passage = self.qc_att(context_output, ques_output, ques_mask)
-        modeled_passage = self.linear_1(modeled_passage)
-        modeled_passage = self._modeling_layer(modeled_passage, context_mask)
-
         ques_output_sp = self._dropout(self._phrase_layer_sp(embedded_question, ques_mask))
-        context_output_sp = self._dropout(self._phrase_layer_sp(embedded_passage, context_mask))
 
         modeled_passage_sp = self.qc_att_sp(context_output_sp, ques_output_sp, ques_mask)
         modeled_passage_sp = self.linear_2(modeled_passage_sp)
@@ -121,7 +121,6 @@ class BidirectionalAttentionFlow(Model):
         # Shape(spans_rep): (batch_size * num_spans, max_batch_span_width, embedding_dim)
         # Shape(spans_mask): (batch_size, num_spans, max_batch_span_width)
         spans_rep_sp, spans_mask = convert_sequence_to_spans(modeled_passage_sp, sentence_spans)
-        spans_rep, _ = convert_sequence_to_spans(modeled_passage, sentence_spans)
         # Shape(gate_logit): (batch_size * num_spans, 2)
         # Shape(gate): (batch_size * num_spans, 1)
         # Shape(pred_sent_probs): (batch_size * num_spans, 2)
@@ -131,17 +130,17 @@ class BidirectionalAttentionFlow(Model):
         strong_sup_loss = F.nll_loss(F.log_softmax(gate_logit, dim=-1).view(batch_size * num_spans, -1),
                                      sent_labels.long().view(batch_size * num_spans), ignore_index=-1)
 
-        gate = (gate >= 0.3).long()
-        spans_rep = spans_rep * gate.unsqueeze(-1).float()
-        attended_sent_embeddings = convert_span_to_sequence(modeled_passage_sp, spans_rep, spans_mask)
-
-        modeled_passage = attended_sent_embeddings + modeled_passage
-        '''
-        # residual, Apply gate on coref_mask
-        modeled_passage = attended_sent_embeddings + modeled_passage
+        gate = (gate >= 0.25).long()
+        # spans_rep = spans_rep * gate.unsqueeze(-1).float()
+        # attended_sent_embeddings = convert_span_to_sequence(modeled_passage_sp, spans_rep, spans_mask)
+        #
+        # modeled_passage = attended_sent_embeddings + modeled_passage
+        modeled_passage = modeled_passage_sp
+        ''' No residual, Apply gate on coref_mask
+        modeled_passage = attended_sent_embeddings
         gate_sent = gate.expand(batch_size * num_spans, max_batch_span_width)
         gate_sent = convert_span_to_sequence(modeled_passage_sp, gate_sent, spans_mask).squeeze(2)
-        gated_context_mask = context_mask * gate_sent.float()
+        gated_context_mask = context_mask.long() * gate_sent
         '''
 
         if self._strong_sup:
@@ -190,8 +189,8 @@ class BidirectionalAttentionFlow(Model):
                 # self._span_accuracy(best_span, torch.stack([span_start, span_end], -1))
                 type_loss = nll_loss(util.masked_log_softmax(predict_type, None), q_type)
                 # loss = start_loss + end_loss + type_loss
-                loss = start_loss + end_loss + type_loss + strong_sup_loss
-                # loss = strong_sup_loss
+                # loss = start_loss + end_loss + type_loss + strong_sup_loss
+                loss = strong_sup_loss
                 if self._strong_sup:
                     loss += coref_sup_loss
                     self._loss_trackers['coref_sup_loss'](coref_sup_loss)
