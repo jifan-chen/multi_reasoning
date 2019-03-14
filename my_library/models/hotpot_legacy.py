@@ -143,11 +143,12 @@ class BidirectionalAttentionFlow(Model):
         attended_sent_embeddings = convert_span_to_sequence(modeled_passage_sp, spans_rep, spans_mask)
 
         modeled_passage = attended_sent_embeddings + modeled_passage
-        ''' No residual, Apply gate on coref_mask
-        modeled_passage = attended_sent_embeddings
+        '''
+        # residual, Apply gate on coref_mask
+        modeled_passage = attended_sent_embeddings + modeled_passage
         gate_sent = gate.expand(batch_size * num_spans, max_batch_span_width)
         gate_sent = convert_span_to_sequence(modeled_passage_sp, gate_sent, spans_mask).squeeze(2)
-        gated_context_mask = context_mask.long() * gate_sent
+        gated_context_mask = context_mask * gate_sent.float()
         '''
 
         if self._strong_sup:
