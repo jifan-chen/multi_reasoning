@@ -1,109 +1,16 @@
 import React from 'react';
 //import HeatMap from './components/heatmap/HeatMap'
-import Collapsible from 'react-collapsible'
-import './balloon.css'
+//import HeatMap from './allenlp_src/HeatMap.js'
+//import Collapsible from 'react-collapsible'
 import './style.css'
+import HeadVisualization from './head_visualization.jsx'
+import QCVisualization from './qc_visualization.jsx'
+import EvdVisualization from './evd_visualization.jsx'
+import Coref from './allenlp_src/demos/Coref.js'
 
-
-class Tok extends React.Component {
-  render() {
-    return (
-        <span>
-        <span className={this.props.class} data-balloon={this.props.tip} data-balloon-pos="up">
-            {this.props.token}
-        </span>
-        <span> </span>
-        </span>
-    );
-  }
-}
-
-class Sent extends React.Component {
-  render() {
-    return (
-        <span className={this.props.class}>
-            {this.props.tokens.map((tok, i) =>
-                {
-                    var className = null;
-                    var tip = null;
-                    if(this.props.scores[i] > 0) {
-                        className = "attn";
-                        tip = this.props.scores[i];
-                    } else if(i === this.props.pos) {
-                        className = "target"
-                        tip = this.props.type;
-                    }
-                    return <Tok class={className} token={tok} tip={tip} key={i}/>})
-            }
-        </span>
-    );
-  }
-}
-
-class Doc extends React.Component {
-  render() {
-    var cur_offset = 0;
-    return (
-        <div className="doc">
-            {this.props.sent_spans.map((sp, i) =>
-                {
-                    var s = sp[0];
-                    var e = sp[1] + 1;
-                    var sent_tokens = this.props.tokens.slice(s, e);
-                    var sent_scores = this.props.scores.slice(s, e);
-                    var pos = this.props.pos - cur_offset;
-                    console.log(cur_offset)
-                    var className = null;
-                    if(this.props.sent_labels[i] === 1) {
-                        className = "support";
-                    }
-                    var sent_ele = <Sent class={className}
-                                    tokens={sent_tokens}
-                                    scores={sent_scores}
-                                    pos={pos}
-                                    type={this.props.type}
-                                    key={i}
-                                />;
-                    cur_offset = cur_offset + e - s;
-                    return sent_ele})
-            }
-            <div>
-                <hr
-                    style={{
-                    border: '1px solid rgb(200, 200, 200)',
-                    backgroundColor: 'rgb(200, 200, 200)'
-                    }}
-                />
-            </div>
-        </div>
-    );
-  }
-}
-
-class HeadAtt extends React.Component {
-  render() {
-    var name = "Head"+this.props.h_idx.toString();
-    return (
-      <Collapsible trigger={name}>
-          {this.props.attns.map((tgt_dict, i) =>
-              {
-                  return (
-                      <Doc sent_spans={this.props.sent_spans}
-                           sent_labels={this.props.sent_labels}
-                           tokens={this.props.doc}
-                           scores={tgt_dict.scores}
-                           pos={tgt_dict.pos}
-                           type={tgt_dict.type}
-                           key={i} />
-                  )
-              })
-          }
-      </Collapsible>
-    );
-  }
-}
 
 class ModelOutput extends React.Component {
+
   render() {
 
     const { outputs } = this.props;
@@ -126,6 +33,11 @@ class ModelOutput extends React.Component {
     // specify it like this, or with this name, but that's what we have right now.
     // var xLabelWidth = "70px";
     var ins = outputs
+    var coref_data = {"document": ins['doc'], "clusters": ins['coref_clusters']};
+    var qc_scores = ins['qc_scores'];
+    var qc_scores_sp = ins['qc_scores_sp'];
+    var pred_sent_probs = ins['pred_sent_probs'];
+    var pred_sent_labels = ins['pred_sent_labels'];
     console.log(ins);
 
     return (
@@ -143,29 +55,66 @@ class ModelOutput extends React.Component {
                   <span className="title">Question:</span> {ins['question']} <br/>
                   <span className="title">Answer:</span> {ins['answer']} <br/>
                   <span className="title">Predict:</span> {ins['predict']} <br/>
-                  <span className="title">F1:</span> {ins['f1']}
+                  <span className="title">F1:</span> {ins['f1']} <br/>
+                  {pred_sent_probs ? <span><span className="title">Evd Precision:</span> {ins['evd_measure']['prec']}<br/></span> : null}
+                  {pred_sent_probs ? <span><span className="title">Evd Recall:</span> {ins['evd_measure']['recl']}<br/></span> : null}
+                  {pred_sent_probs ? <span><span className="title">Evd F1:</span> {ins['evd_measure']['f1']}</span> : null}
               </div>
           </div>
         </div>
         
         <div className="form__field">
-          <Collapsible trigger="Examples of learned attentions">
-              {ins['attns'].map((head_attns, i) =>
-                  {
-                      return (
-                          <HeadAtt 
-                               sent_spans={ins['sent_spans']}
-                               sent_labels={ins['sent_labels']}
-                               doc={ins['doc']}
-                               attns={head_attns}
-                               h_idx={i} 
-                               key={i} />
-                      )
-                  })
-              }
-          </Collapsible>
+          <HeadVisualization 
+               sent_spans={ins['sent_spans']}
+               sent_labels={ins['sent_labels']}
+               doc={ins['doc']}
+               attns={ins['attns']}
+          />
         </div>
-
+        <div className="form__field">
+          <Coref 
+               responseData={coref_data}
+          />
+        </div>
+        <div>
+          <QCVisualization
+              sent_spans={ins['sent_spans']}
+              sent_labels={ins['sent_labels']}
+              doc={ins['doc']}
+              colLabels={ins['question_tokens']} 
+              rowLabels={ins['doc']}
+              data={qc_scores} 
+              includeSlider={true} 
+              showAllCols={true} 
+              name="Passage-Question"
+          />
+        </div>
+        { qc_scores_sp ?
+            <div>
+              <QCVisualization
+                  sent_spans={ins['sent_spans']}
+                  sent_labels={ins['sent_labels']}
+                  doc={ins['doc']}
+                  colLabels={ins['question_tokens']} 
+                  rowLabels={ins['doc']}
+                  data={qc_scores_sp} 
+                  includeSlider={true} 
+                  showAllCols={true} 
+                  name="Evd Passage-Question"
+              />
+            </div> : null
+        }
+        { pred_sent_probs ?
+            <div>
+              <EvdVisualization
+                  sent_spans={ins['sent_spans']}
+                  sent_labels={ins['sent_labels']}
+                  pred_sent_labels={pred_sent_labels}
+                  pred_sent_probs={pred_sent_probs}
+                  doc={ins['doc']}
+              />
+            </div> : null
+        }
       </div>
     );
   }

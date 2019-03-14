@@ -108,14 +108,14 @@ class BidirectionalAttentionFlow(Model):
         ques_output = self._dropout(self._phrase_layer(embedded_question, ques_mask))
         context_output = self._dropout(self._phrase_layer(embedded_passage, context_mask))
 
-        modeled_passage = self.qc_att(context_output, ques_output, ques_mask)
+        modeled_passage, qc_score = self.qc_att(context_output, ques_output, ques_mask)
         modeled_passage = self.linear_1(modeled_passage)
         modeled_passage = self._modeling_layer(modeled_passage, context_mask)
 
         ques_output_sp = self._dropout(self._phrase_layer_sp(embedded_question, ques_mask))
         context_output_sp = self._dropout(self._phrase_layer_sp(embedded_passage, context_mask))
 
-        modeled_passage_sp = self.qc_att_sp(context_output_sp, ques_output_sp, ques_mask)
+        modeled_passage_sp, qc_score_sp = self.qc_att_sp(context_output_sp, ques_output_sp, ques_mask)
         modeled_passage_sp = self.linear_2(modeled_passage_sp)
         modeled_passage_sp = self._modeling_layer_sp(modeled_passage_sp, context_mask)
         # Shape(spans_rep): (batch_size * num_spans, max_batch_span_width, embedding_dim)
@@ -178,6 +178,9 @@ class BidirectionalAttentionFlow(Model):
             "span_end_logits": span_end_logits,
             "best_span": best_span,
             "self_attention_score": self_att_score,
+            "qc_score": qc_score,
+            "qc_score_sp": qc_score_sp,
+            "gate_probs": pred_sent_probs[:, 1].view(batch_size, num_spans) #[B, num_span]
         }
 
         # Compute the loss for training.
@@ -393,6 +396,6 @@ class BiAttention(nn.Module):
         if self.strong_sup:
             # print(att.shape, mask_sp.shape)
             loss = torch.mean(-torch.log(torch.sum(weight_one * mask_sp.unsqueeze(1), dim=-1) + 1e-30))
-            return torch.cat([input, output_one, input*output_one, output_two*output_one], dim=-1), loss
+            return torch.cat([input, output_one, input*output_one, output_two*output_one], dim=-1), loss, weight_one
         else:
-            return torch.cat([input, output_one, input*output_one, output_two*output_one], dim=-1)
+            return torch.cat([input, output_one, input*output_one, output_two*output_one], dim=-1), weight_one
