@@ -8,7 +8,6 @@ from allennlp.tools import squad_eval
 import numpy as np
 
 
-
 def find_att_toks(scores, mask, th, row_offset, conn_type):
     scores = scores * mask
     accept = scores >= th
@@ -69,9 +68,9 @@ class HotpotPredictor(Predictor):
         """
         self._model = model
         self._dataset_reader = dataset_reader
-        with open('/scratch/cluster/jfchen/jason/multihopQA/hotpot/test/test_10000_coref.json', 'r') as f:
+        with open('/backup2/jfchen/data/hotpot/test/hotpot_test_100.json', 'r') as f:
             train = json.load(f)
-        with open('/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_coref.json', 'r') as f:
+        with open('/backup2/jfchen/data/hotpot/dev/dev_distractor_coref.json', 'r') as f:
             dev = json.load(f)
         self.demo_dataset = {'train': train,
                              'dev': dev}
@@ -123,7 +122,8 @@ class HotpotPredictor(Predictor):
         self_att_scores = np.array(self_att_scores)
         em, f1 = calc_em_and_f1(best_span_str, answer_texts)
         num_att_heads = self_att_scores.shape[0]
-	# coref res
+
+        # coref res
         coref_map = get_coref_map(coref_clusters, len(passage_tokens), passage_tokens)
         coref_map = coref_map.astype(bool)
         assert self_att_scores.shape == (num_att_heads, len(passage_tokens), len(passage_tokens))

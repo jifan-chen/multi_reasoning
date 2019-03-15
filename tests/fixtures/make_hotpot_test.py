@@ -15,7 +15,7 @@ def split_dataset(input_path, output_path):
     json.dump(output_data, open("{}{}.json".format(output_path, file_count), 'w'))
 
 
-def create_test_data(input_path, output_path, data_number=10000):
+def create_test_data(input_path, output_path, data_number=100):
     start = 0
     input_data = json.load(open(input_path, 'r'))
     test_data = []
@@ -28,10 +28,10 @@ def create_test_data(input_path, output_path, data_number=10000):
 
 
 if __name__ == '__main__':
-    # original_path = '/backup2/jfchen/data/hotpot/train/train_coref.json'
-    # output_url = '/backup2/jfchen/data/hotpot/test/hotpot_test_10000.json'
-    # create_test_data(original_path, output_url)
-    original_path = '/backup2/jfchen/data/hotpot/test/hotpot_test_100.json'
-    output_url = '/backup2/jfchen/data/hotpot/test/test_100/test'
-    split_dataset(original_path, output_url)
+    original_path = '/backup2/jfchen/data/hotpot/dev/dev_distractor_coref.json'
+    output_url = '/backup2/jfchen/data/hotpot/dev/dev_100.json'
+    create_test_data(original_path, output_url)
+    # original_path = '/backup2/jfchen/data/hotpot/test/hotpot_test_100.json'
+    # output_url = '/backup2/jfchen/data/hotpot/test/test_100/test'
+    # split_dataset(original_path, output_url)
 

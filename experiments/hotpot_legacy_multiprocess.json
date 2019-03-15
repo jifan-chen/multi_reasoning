@@ -31,22 +31,27 @@
     },
 
   "validation_dataset_reader": {
-    "type": "hotpot_reader",
-    "lazy": false,
-    "para_limit": 2250,
-    "token_indexers": {
-      "tokens": {
-        "type": "single_id",
-        "lowercase_tokens": false
+    "type": "multiprocess",
+      "base_reader" : {
+          "type": "hotpot_reader",
+          "lazy": true,
+          "para_limit": 2250,
+          "token_indexers": {
+            "tokens": {
+              "type": "single_id",
+              "lowercase_tokens": false
+            },
+            "token_characters": {
+              "type": "characters",
+              "character_tokenizer": {
+                "byte_encoding": "utf-8"
+              },
+              "min_padding_length": 5
+            }
+          }
       },
-      "token_characters": {
-        "type": "characters",
-        "character_tokenizer": {
-          "byte_encoding": "utf-8"
-        },
-        "min_padding_length": 5
-      }
-    }
+      "num_workers": 2,
+      "output_queue_size": 500
   },
 
 
@@ -56,7 +61,7 @@
   "model": {
     "type": "hotpot_legacy",
 
-    "strong_sup": true,
+    "strong_sup": false,
 
     "text_field_embedder": {
       "token_embedders": {
@@ -185,8 +190,14 @@
   },
 
   "validation_iterator": {
-    "type": "basic",
-    "batch_size": 10
+    "type": "multiprocess",
+    "base_iterator": {
+      "type": "basic",
+      "max_instances_in_memory": 500,
+      "batch_size": 10
+    },
+    "num_workers": 4,
+    "output_queue_size": 50
   },
 
   "trainer": {

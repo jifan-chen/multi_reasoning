@@ -131,7 +131,7 @@ class BidirectionalAttentionFlow(Model):
         strong_sup_loss = F.nll_loss(F.log_softmax(gate_logit, dim=-1).view(batch_size * num_spans, -1),
                                      sent_labels.long().view(batch_size * num_spans), ignore_index=-1)
 
-        gate = (gate >= 0.3).long()
+        # gate = (gate >= 0.1).long()
         spans_rep = spans_rep * gate.unsqueeze(-1).float()
         attended_sent_embeddings = convert_span_to_sequence(modeled_passage_sp, spans_rep, spans_mask)
 
@@ -166,7 +166,6 @@ class BidirectionalAttentionFlow(Model):
 
         output_type = torch.cat([modeled_passage, output_end, output_start], dim=2)
         output_type = torch.max(output_type, 1)[0]
-        # output_type = torch.max(self.rnn_type(output_type, context_mask), 1)[0]
         predict_type = self.linear_type(output_type)
         type_predicts = torch.argmax(predict_type, 1)
 
@@ -177,16 +176,14 @@ class BidirectionalAttentionFlow(Model):
             "span_end_logits": span_end_logits,
             "best_span": best_span,
             "self_attention_score": self_att_score,
+            "gate": gate.view(1, -1)
         }
 
         # Compute the loss for training.
         if span_start is not None:
             try:
                 start_loss = nll_loss(util.masked_log_softmax(span_start_logits, None), span_start.squeeze(-1))
-                # self._span_start_accuracy(span_start_logits, span_start.squeeze(-1))
                 end_loss = nll_loss(util.masked_log_softmax(span_end_logits, None), span_end.squeeze(-1))
-                # self._span_end_accuracy(span_end_logits, span_end.squeeze(-1))
-                # self._span_accuracy(best_span, torch.stack([span_start, span_end], -1))
                 type_loss = nll_loss(util.masked_log_softmax(predict_type, None), q_type)
                 # loss = start_loss + end_loss + type_loss
                 loss = start_loss + end_loss + type_loss + strong_sup_loss
@@ -194,7 +191,6 @@ class BidirectionalAttentionFlow(Model):
                 if self._strong_sup:
                     loss += coref_sup_loss
                     self._loss_trackers['coref_sup_loss'](coref_sup_loss)
-                #print('start_loss:{} end_loss:{} type_loss:{}'.format(start_loss,end_loss,type_loss))
                 self._loss_trackers['loss'](loss)
                 self._loss_trackers['start_loss'](start_loss)
                 self._loss_trackers['end_loss'](end_loss)
@@ -317,7 +313,6 @@ class SpanGate(nn.Module):
                 spans_tensor: torch.FloatTensor,
                 spans_mask: torch.FloatTensor):
 
-        print("spans_tensor", spans_tensor.shape)
         batch_size, num_spans, max_batch_span_width = spans_mask.size()
         # Shape: (batch_size * num_spans, embedding_dim)
         max_pooled_span_emb = torch.max(spans_tensor, dim=1)[0]
