@@ -133,7 +133,7 @@ export default class QCVisualization extends React.Component {
   render() {
     var act_sent = this.state.activeSentId;
     var click_sent = this.state.clickSentId;
-    if(click_sent) {
+    if(click_sent === 0 || click_sent) {
         var click_sent_sp = this.props.sent_spans[click_sent];
         var slice_rowLabels = this.props.rowLabels.slice(click_sent_sp[0], click_sent_sp[1]+1)
         var slice_data = this.props.data.slice(click_sent_sp[0], click_sent_sp[1]+1)

@@ -12,15 +12,21 @@ from my_library.metrics import AttF1Measure
 
 
 
-def find_att_toks(scores, mask, th):
+def find_att_toks(scores, labels, mask, th):
     scores = scores * mask
     accept = scores >= th
     accept_row = np.sum(accept, axis=1) >= 1
     accept_scores = scores * accept
+    accept_labels = labels & accept
     row_idx = (np.arange(scores.shape[0])[accept_row]).tolist()
     row_accept_scores = accept_scores[accept_row, :].tolist()
-    return list(map(lambda x: {'target': "", 'pos': x[0], 'scores': x[1], 'type': 'target'},
-                    zip(row_idx, row_accept_scores)))
+    row_accept_labels = accept_labels[accept_row, :].tolist()
+    return list(map(lambda x: {'target': "", 
+                               'pos': x[0], 
+                               'scores': x[1], 
+                               'type': 'T' if sum(x[2]) > 0 else 'F', 
+                               'labels': x[2]},
+                    zip(row_idx, row_accept_scores, row_accept_labels)))
 
 
 def calc_em_and_f1(best_span_string, answer_strings):
@@ -44,13 +50,26 @@ def calc_evd_f1(pred_labels, gold_labels):
     return precision, recall, f1
 
 
-def analyze_att(att_scores, num_att_heads, TH):
+def analyze_att(att_scores, labels, num_att_heads, TH):
     self_mask = 1 - np.identity(att_scores.shape[1])
     all_att_toks = [[] for h_idx in range(num_att_heads)]
     for h_idx in range(num_att_heads):
-        att_toks = find_att_toks(att_scores[h_idx], self_mask, TH)
+        att_toks = find_att_toks(att_scores[h_idx], labels, self_mask, TH)
         all_att_toks[h_idx].extend(att_toks)
     return all_att_toks
+
+
+def get_coref_map(coref_clusters, seq_len, passage_tokens):
+    m = np.zeros((seq_len, seq_len))
+    for c in coref_clusters:
+        for i in range(0, len(c)-1):
+            for j in range(i+1, len(c)):
+                i_s, i_e = c[i]
+                j_s, j_e = c[j]
+                if not " ".join(passage_tokens[i_s:i_e+1]).lower() == " ".join(passage_tokens[j_s:j_e+1]).lower():
+                    m[i_s:i_e+1, j_s:j_e+1] = 1
+                    m[j_s:j_e+1, i_s:i_e+1] = 1
+    return m
 
 
 @Predictor.register('hotpot_predictor')
@@ -128,10 +147,12 @@ class HotpotPredictor(Predictor):
         evd_measure = {'prec': evd_prec, 'recl': evd_recl, 'f1': evd_f1}
         num_att_heads = self_att_scores.shape[0]
 	# coref res
+        coref_map = get_coref_map(coref_clusters, len(passage_tokens), passage_tokens)
+        coref_map = coref_map.astype(bool)
         assert self_att_scores.shape == (num_att_heads, len(passage_tokens), len(passage_tokens))
         assert np.allclose(np.sum(self_att_scores, axis=2), 1.)
         assert len(sent_labels) == len(token_spans_sent)
-        att_toks = analyze_att(self_att_scores, num_att_heads, TH)
+        att_toks = analyze_att(self_att_scores, coref_map, num_att_heads, TH)
         # find att tokens
         heads_doc_res = []
         for h_idx in range(num_att_heads):
