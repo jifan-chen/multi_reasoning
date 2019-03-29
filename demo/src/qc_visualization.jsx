@@ -26,9 +26,9 @@ class Sent extends React.Component {
     var mouse_out_func = this.props.onMouseOut;
     var click_func = this.props.onClick;
     var token_className = null;
-    if(this.props.bold) {
-        token_className = "title";
-    }
+    //if(this.props.bold) {
+    //    token_className = "title";
+    //}
     return (
         <span className={this.props.class}
               onMouseOver={mouse_over_func}
@@ -67,13 +67,16 @@ class Doc extends React.Component {
                     if(this.props.sent_labels[i] === 1) {
                         className = "support";
                     }
+                    if(this.props.act_sent === i) {
+                        //bold = true;
+                        style={
+                            backgroundColor: '#e6f7e3'
+                        };
+                    }
                     if(this.props.click_sent === i) {
                         style={
                             backgroundColor: '#bfeeb7'
                         }
-                    }
-                    if(this.props.act_sent === i) {
-                        bold = true;
                     }
                     var sent_ele = <Sent class={className}
                                     bold={bold}

@@ -2,6 +2,7 @@ from overrides import overrides
 from allennlp.common.util import JsonDict
 import json
 from allennlp.data import DatasetReader, Instance
+from allennlp.data.dataset_readers import MultiprocessDatasetReader
 from allennlp.predictors.predictor import Predictor
 from allennlp.models import Model
 from allennlp.tools import squad_eval
@@ -66,9 +67,13 @@ def get_coref_map(coref_clusters, seq_len, passage_tokens):
             for j in range(i+1, len(c)):
                 i_s, i_e = c[i]
                 j_s, j_e = c[j]
+                '''
                 if not " ".join(passage_tokens[i_s:i_e+1]).lower() == " ".join(passage_tokens[j_s:j_e+1]).lower():
                     m[i_s:i_e+1, j_s:j_e+1] = 1
                     m[j_s:j_e+1, i_s:i_e+1] = 1
+                '''
+                m[i_s:i_e+1, j_s:j_e+1] = 1
+                m[j_s:j_e+1, i_s:i_e+1] = 1
     return m
 
 
@@ -80,7 +85,10 @@ class HotpotPredictor(Predictor):
         Override the original init function to load the dataset to memory for demo
         """
         self._model = model
-        self._dataset_reader = dataset_reader
+        if type(dataset_reader) == MultiprocessDatasetReader:
+            self._dataset_reader = dataset_reader.reader
+        else:
+            self._dataset_reader = dataset_reader
         with open('/scratch/cluster/jfchen/jason/multihopQA/hotpot/test/test_10000_coref.json', 'r') as f:
             train = json.load(f)
         with open('/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_coref.json', 'r') as f:
@@ -130,46 +138,53 @@ class HotpotPredictor(Predictor):
         token_spans_sent    = output['token_spans_sent']
         sent_labels         = output['sent_labels']
         coref_clusters      = output['coref_clusters']
-        self_att_scores     = output['self_attention_score']
+        self_att_scores     = output.get('self_attention_score', None)
+        evd_self_att_scores = output.get('evd_self_attention_score', None)
         qc_scores           = output['qc_score']
         qc_scores_sp        = output.get('qc_score_sp', None)
         gate_probs          = output.get('gate_probs', None)
         answer_texts        = output['answer_texts']
         best_span_str       = output['best_span_str']
         article_id          = output['_id']
-        self_att_scores = np.array(self_att_scores)
-        gate_probs = np.array(gate_probs)
         em, f1 = calc_em_and_f1(best_span_str, answer_texts)
         if not gate_probs is None:
+            gate_probs = np.array(gate_probs)
             evd_prec, evd_recl, evd_f1 = calc_evd_f1(gate_probs, sent_labels)
         else:
             evd_prec, evd_recl, evd_f1 = None, None, None
         evd_measure = {'prec': evd_prec, 'recl': evd_recl, 'f1': evd_f1}
-        num_att_heads = self_att_scores.shape[0]
+        if not evd_self_att_scores is None:
+            evd_self_att_scores = np.transpose(evd_self_att_scores, (1, 2, 0))
 	# coref res
-        coref_map = get_coref_map(coref_clusters, len(passage_tokens), passage_tokens)
-        coref_map = coref_map.astype(bool)
-        assert self_att_scores.shape == (num_att_heads, len(passage_tokens), len(passage_tokens))
-        assert np.allclose(np.sum(self_att_scores, axis=2), 1.)
-        assert len(sent_labels) == len(token_spans_sent)
-        att_toks = analyze_att(self_att_scores, coref_map, num_att_heads, TH)
-        # find att tokens
-        heads_doc_res = []
-        for h_idx in range(num_att_heads):
-            doc_res = []
-            for tok_dict in att_toks[h_idx]:
-                assert len(tok_dict['target']) == 0
-                tok_dict['target'] = passage_tokens[tok_dict['pos']]
-                doc_res.append(tok_dict)
-            heads_doc_res.append(doc_res)
+        if not self_att_scores is None:
+            self_att_scores = np.array(self_att_scores)
+            num_att_heads = self_att_scores.shape[0]
+            coref_map = get_coref_map(coref_clusters, len(passage_tokens), passage_tokens)
+            coref_map = coref_map.astype(bool)
+            assert self_att_scores.shape == (num_att_heads, len(passage_tokens), len(passage_tokens))
+            #assert np.allclose(np.sum(self_att_scores, axis=2), 1.)
+            assert len(sent_labels) == len(token_spans_sent)
+            att_toks = analyze_att(self_att_scores, coref_map, num_att_heads, TH)
+            # find att tokens
+            heads_doc_res = []
+            for h_idx in range(num_att_heads):
+                doc_res = []
+                for tok_dict in att_toks[h_idx]:
+                    assert len(tok_dict['target']) == 0
+                    tok_dict['target'] = passage_tokens[tok_dict['pos']]
+                    doc_res.append(tok_dict)
+                heads_doc_res.append(doc_res)
+        else:
+            heads_doc_res = None
         print("fin:", time.time() - start_time)
         return {"doc":              passage_tokens,
                 "attns":            heads_doc_res,
                 "qc_scores":        qc_scores,
                 "qc_scores_sp":     qc_scores_sp,
-                "pred_sent_labels": (gate_probs >= 0.3).astype("int").tolist(),
-                "pred_sent_probs":  gate_probs.tolist(),
+                "pred_sent_labels": (gate_probs >= 0.3).astype("int").tolist() if not gate_probs is None else None,
+                "pred_sent_probs":  gate_probs.tolist() if not gate_probs is None else None,
                 "evd_measure":      evd_measure,
+                "evd_attns":        evd_self_att_scores.tolist() if not evd_self_att_scores is None else None,
                 "question":         " ".join(question_tokens),
                 "question_tokens":  question_tokens,
                 "answer":           " ".join(answer_texts),
@@ -177,7 +192,7 @@ class HotpotPredictor(Predictor):
                 "f1":               f1,
                 "sent_spans":       [list(sp) for sp in token_spans_sent],
                 "sent_labels":      sent_labels,
-                "coref_clusters":   coref_clusters}
+                "coref_clusters":   {'coref clusters': coref_clusters}}
 
     def _predict_json(self, inputs: JsonDict) -> JsonDict:
         """
