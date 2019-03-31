@@ -135,6 +135,9 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
             candidate_answers: Counter = Counter()
             for span_start, span_end in token_spans:
                 candidate_answers[(span_start, span_end)] += 1
+            for s, e in candidate_answers:
+                if not any([sp_s <= s and e <= sp_e for sp_s, sp_e in token_spans_sp]):
+                    candidate_answers[(s, e)] = 0
             span_start, span_end = candidate_answers.most_common(1)[0][0]
             # print('best span:', span_start, span_end)
             # print('span:', span_start, span_end)

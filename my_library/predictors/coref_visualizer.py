@@ -31,8 +31,10 @@ class CorefVisualizer(Predictor):
         #with open('/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_coref.json', 'r') as f:
         #    dev = json.load(f)
         with open('/scratch/cluster/jfchen/jason/multihopQA/e2e_test.pkl', 'rb') as f:
-            train_coref = pickle.load(f)
-        self.demo_dataset = {'train': [train, train_coref],}
+            e2e_coref = pickle.load(f)
+        with open('/scratch/cluster/jfchen/jason/multihopQA/spacy_test.pkl', 'rb') as f:
+            spacy_coref = pickle.load(f)
+        self.demo_dataset = {'train': [train, e2e_coref, spacy_coref],}
                              #'dev': dev}
 
     @overrides
@@ -50,11 +52,12 @@ class CorefVisualizer(Predictor):
                                   "instance_idx": idx}``
         """
         start_time = time.time()
-        dataset, coref_dataset = self.demo_dataset[inputs['dataset']]
+        dataset, e2e_coref_dataset, spacy_coref_dataset = self.demo_dataset[inputs['dataset']]
         idx = int(inputs['instance_idx']) % len(dataset)
         hotpot_instance = dataset[idx]
-        coref = coref_dataset[idx]
-        return {"doc":              coref['coref_info']['document'],
+        e2e_coref = e2e_coref_dataset[idx]
+        spacy_coref = spacy_coref_dataset[idx]
+        return {"doc":              e2e_coref['coref_info']['document'],
                 "attns":            None,
                 "qc_scores":        None,
                 "qc_scores_sp":     None,
@@ -69,8 +72,10 @@ class CorefVisualizer(Predictor):
                 "f1":               0.,
                 "sent_spans":       None,
                 "sent_labels":      None,
-                "coref_clusters":   {'e2e coref clusters': coref['coref_info']['clusters'],
-                                     'allen coref clusters': hotpot_instance['coref_clusters']}
+                "coref_clusters":   {'spacy coref clusters': spacy_coref['coref_info'],
+                                     'e2e coref clusters': e2e_coref['coref_info'],
+                                     'allen coref clusters': {'document': e2e_coref['coref_info']['document'],
+                                                              'clusters': hotpot_instance['coref_clusters']}}
                }
 
     def _predict_json(self, inputs: JsonDict) -> JsonDict:

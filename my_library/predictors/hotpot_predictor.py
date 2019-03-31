@@ -192,7 +192,7 @@ class HotpotPredictor(Predictor):
                 "f1":               f1,
                 "sent_spans":       [list(sp) for sp in token_spans_sent],
                 "sent_labels":      sent_labels,
-                "coref_clusters":   {'coref clusters': coref_clusters}}
+                "coref_clusters":   {'coref clusters': {'document': passage_tokens, 'clusters': coref_clusters}}}
 
     def _predict_json(self, inputs: JsonDict) -> JsonDict:
         """

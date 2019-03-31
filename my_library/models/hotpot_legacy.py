@@ -23,6 +23,7 @@ class BidirectionalAttentionFlow(Model):
                  span_start_encoder: Seq2SeqEncoder,
                  span_end_encoder: Seq2SeqEncoder,
                  self_attention_layer: Seq2SeqEncoder,
+                 gate_sent_encoder: Seq2SeqEncoder,
                  gate_self_attention_layer: Seq2SeqEncoder,
                  span_self_attentive_encoder: Seq2SeqEncoder,
                  type_encoder: Seq2SeqEncoder,
@@ -67,6 +68,7 @@ class BidirectionalAttentionFlow(Model):
             nn.ReLU()
         )
         #self.self_att = BiAttention(encoding_dim, dropout, strong_sup=strong_sup)
+        self._gate_sent_encoder = gate_sent_encoder
         self._gate_self_attention_layer = gate_self_attention_layer
 
         self.linear_start = nn.Linear(encoding_dim, 1)
@@ -129,7 +131,8 @@ class BidirectionalAttentionFlow(Model):
         # Shape(pred_sent_probs): (batch_size * num_spans, 2)
         #gate_logit, gate, pred_sent_probs = self._span_gate(spans_rep_sp, spans_mask)
         gate_logit, gate, pred_sent_probs, g_att_score = self._span_gate(spans_rep_sp, spans_mask,
-                                                                         self._gate_self_attention_layer)
+                                                                         self._gate_self_attention_layer,
+                                                                         self._gate_sent_encoder)
         batch_size, num_spans, max_batch_span_width = spans_mask.size()
 
         strong_sup_loss = F.nll_loss(F.log_softmax(gate_logit, dim=-1).view(batch_size * num_spans, -1),
@@ -329,7 +332,8 @@ class SpanGate(nn.Module):
     def forward(self,
                 spans_tensor: torch.FloatTensor,
                 spans_mask: torch.FloatTensor,
-                self_att_layer: Seq2SeqEncoder):
+                self_att_layer: Seq2SeqEncoder,
+                sent_encoder: Seq2SeqEncoder):
 
         print("spans_tensor", spans_tensor.shape)
         batch_size, num_spans, max_batch_span_width = spans_mask.size()
@@ -341,6 +345,8 @@ class SpanGate(nn.Module):
         max_pooled_span_emb = max_pooled_span_emb.view(batch_size, num_spans, spans_tensor.size(2))
         # shape: (batch_size, num_spans)
         max_pooled_span_mask = (torch.sum(spans_mask, dim=-1) >= 1).float()
+        # shape: (batch_size, num_spans, embedding_dim)
+        max_pooled_span_emb = sent_encoder(max_pooled_span_emb, max_pooled_span_mask)
         # shape: (batch_size, num_spans, embedding_dim)
         att_max_pooled_span_emb, _, att_score = self_att_layer(max_pooled_span_emb, max_pooled_span_mask)
         max_pooled_span_emb = max_pooled_span_emb + att_max_pooled_span_emb

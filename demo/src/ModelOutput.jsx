@@ -76,10 +76,10 @@ class ModelOutput extends React.Component {
         { coref_data ?
             Object.keys(coref_data).map((title, i) =>
                 {  
-                    var c_data = {"document": ins['doc'], "clusters": coref_data[title]};
+                    //var c_data = {"document": ins['doc'], "clusters": coref_data[title]};
                     return  <div className="form__field" key={i}>
                             <Coref 
-                                responseData={c_data}
+                                responseData={coref_data[title]}
                                 title={title}
                                 key={i}
                             />
