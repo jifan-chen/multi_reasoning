@@ -23,7 +23,8 @@ class AttF1Measure(Metric):
                  attention_scores: torch.Tensor,
                  gold_labels: torch.Tensor,
                  mask: Optional[torch.Tensor] = None,
-                 TH: Optional[float] = None):
+                 TH: Optional[float] = None,
+                 dim: Optional[int] = None):
         """
         Parameters
         ----------
@@ -52,26 +53,42 @@ class AttF1Measure(Metric):
 
         # True Negatives: correct non-positive predictions.
         correct_null_predictions = (1. - predictions) * negative_label_mask
-        T_N = (correct_null_predictions.float() * mask).sum()
-        self._true_negatives += T_N
+        if dim:
+            T_N = (correct_null_predictions.float() * mask).sum(dim=dim)
+            self._true_negatives += T_N.sum()
+        else:
+            T_N = (correct_null_predictions.float() * mask).sum()
+            self._true_negatives += T_N
 
         # True Positives: correct positively labeled predictions.
         correct_non_null_predictions = predictions * positive_label_mask
-        T_P = (correct_non_null_predictions * mask).sum()
-        self._true_positives += T_P
+        if dim:
+            T_P = (correct_non_null_predictions * mask).sum(dim=dim)
+            self._true_positives += T_P.sum()
+        else:
+            T_P = (correct_non_null_predictions * mask).sum()
+            self._true_positives += T_P
 
         # False Negatives: incorrect negatively labeled predictions.
         incorrect_null_predictions = (1. - predictions) * positive_label_mask
-        F_N = (incorrect_null_predictions * mask).sum()
-        self._false_negatives += F_N
+        if dim:
+            F_N = (incorrect_null_predictions * mask).sum(dim=dim)
+            self._false_negatives += F_N.sum()
+        else:
+            F_N = (incorrect_null_predictions * mask).sum()
+            self._false_negatives += F_N
 
         # False Positives: incorrect positively labeled predictions
         incorrect_non_null_predictions = predictions * negative_label_mask
-        F_P = (incorrect_non_null_predictions * mask).sum()
-        self._false_positives += F_P
+        if dim:
+            F_P = (incorrect_non_null_predictions * mask).sum(dim=dim)
+            self._false_positives += F_P.sum()
+        else:
+            F_P = (incorrect_non_null_predictions * mask).sum()
+            self._false_positives += F_P
 
         # T_P, num pred, num label
-        return T_P.item(), (T_P + F_P).item(), (T_P + F_N).item()
+        return T_P.tolist(), (T_P + F_P).tolist(), (T_P + F_N).tolist()
 
     def get_metric(self, reset: bool = False):
         """

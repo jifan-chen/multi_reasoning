@@ -14,7 +14,7 @@ from my_library.models.utils import convert_sequence_to_spans, convert_span_to_s
 from my_library.metrics import AttF1Measure
 
 
-@Model.register("hotpot_legacy")
+@Model.register("hotpot_legacy_raw")
 class BidirectionalAttentionFlow(Model):
     def __init__(self, vocab: Vocabulary,
                  text_field_embedder: TextFieldEmbedder,
@@ -38,12 +38,12 @@ class BidirectionalAttentionFlow(Model):
         self._text_field_embedder = text_field_embedder
 
         self._phrase_layer = phrase_layer
-        self._phrase_layer_sp = phrase_layer_sp
+        #self._phrase_layer_sp = phrase_layer_sp
 
         self._dropout = torch.nn.Dropout(p=dropout)
 
         self._modeling_layer = modeling_layer
-        self._modeling_layer_sp = modeling_layer_sp
+        #self._modeling_layer_sp = modeling_layer_sp
 
         self._span_start_encoder = span_start_encoder
         self._span_end_encoder = span_end_encoder
@@ -56,9 +56,9 @@ class BidirectionalAttentionFlow(Model):
 
         encoding_dim = span_start_encoder.get_output_dim()
 
-        self._span_gate = SpanGate(encoding_dim)
+        #self._span_gate = SpanGate(encoding_dim)
         self.qc_att = BiAttention(encoding_dim, dropout)
-        self.qc_att_sp = BiAttention(encoding_dim, dropout)
+        #self.qc_att_sp = BiAttention(encoding_dim, dropout)
         self.linear_1 = nn.Sequential(
                 nn.Linear(encoding_dim * 4, encoding_dim),
                 nn.ReLU()
@@ -67,9 +67,9 @@ class BidirectionalAttentionFlow(Model):
             nn.Linear(encoding_dim * 4, encoding_dim),
             nn.ReLU()
         )
-        #self.self_att = BiAttention(encoding_dim, dropout, strong_sup=strong_sup)
-        self._gate_sent_encoder = gate_sent_encoder
-        self._gate_self_attention_layer = gate_self_attention_layer
+        self.self_att = BiAttention(encoding_dim, dropout, strong_sup=strong_sup)
+        #self._gate_sent_encoder = gate_sent_encoder
+        #self._gate_self_attention_layer = gate_self_attention_layer
 
         self.linear_start = nn.Linear(encoding_dim, 1)
 
@@ -109,22 +109,15 @@ class BidirectionalAttentionFlow(Model):
         ques_mask = util.get_text_field_mask(question).float()
         context_mask = util.get_text_field_mask(passage).float()
 
-        #embedded_question = self._dropout(embedded_question)
-        #embedded_passage = self._dropout(embedded_passage)
-
         ques_output = self._dropout(self._phrase_layer(embedded_question, ques_mask))
         context_output = self._dropout(self._phrase_layer(embedded_passage, context_mask))
-        #ques_output = self._phrase_layer(embedded_question, ques_mask)
-        #context_output = self._phrase_layer(embedded_passage, context_mask)
 
         modeled_passage, qc_score = self.qc_att(context_output, ques_output, ques_mask)
         modeled_passage = self.linear_1(modeled_passage)
         modeled_passage = self._modeling_layer(modeled_passage, context_mask)
-
+        '''
         ques_output_sp = self._dropout(self._phrase_layer_sp(embedded_question, ques_mask))
         context_output_sp = self._dropout(self._phrase_layer_sp(embedded_passage, context_mask))
-        #ques_output_sp = self._phrase_layer_sp(embedded_question, ques_mask)
-        #context_output_sp = self._phrase_layer_sp(embedded_passage, context_mask)
 
         modeled_passage_sp, qc_score_sp = self.qc_att_sp(context_output_sp, ques_output_sp, ques_mask)
         modeled_passage_sp = self.linear_2(modeled_passage_sp)
@@ -136,9 +129,8 @@ class BidirectionalAttentionFlow(Model):
         # Shape(gate_logit): (batch_size * num_spans, 2)
         # Shape(gate): (batch_size * num_spans, 1)
         # Shape(pred_sent_probs): (batch_size * num_spans, 2)
-        # Shape(gate_mask): (batch_size, num_spans)
         #gate_logit, gate, pred_sent_probs = self._span_gate(spans_rep_sp, spans_mask)
-        gate_logit, gate, pred_sent_probs, gate_mask, g_att_score = self._span_gate(spans_rep_sp, spans_mask,
+        gate_logit, gate, pred_sent_probs, g_att_score = self._span_gate(spans_rep_sp, spans_mask,
                                                                          self._gate_self_attention_layer,
                                                                          self._gate_sent_encoder)
         batch_size, num_spans, max_batch_span_width = spans_mask.size()
@@ -151,6 +143,9 @@ class BidirectionalAttentionFlow(Model):
         attended_sent_embeddings = convert_span_to_sequence(modeled_passage_sp, spans_rep, spans_mask)
 
         modeled_passage = attended_sent_embeddings + modeled_passage
+        '''
+        batch_size = modeled_passage.size(0)
+        strong_sup_loss = torch.tensor(0.)
         '''
         # residual, Apply gate on coref_mask
         modeled_passage = attended_sent_embeddings + modeled_passage
@@ -172,9 +167,9 @@ class BidirectionalAttentionFlow(Model):
             self_att_passage = self._self_attention_layer(modeled_passage, context_mask)
             modeled_passage = modeled_passage + self_att_passage[0]
             self_att_score = self_att_passage[2]
-            # modeled_passage = modeled_passage + \
-            #                   self.linear_2(self.self_att(modeled_passage, modeled_passage, context_mask))
             '''
+            modeled_passage = modeled_passage + \
+                              self.linear_2(self.self_att(modeled_passage, modeled_passage, context_mask)[0])
             self_att_score = None
 
         output_start = self._span_start_encoder(modeled_passage, context_mask)
@@ -196,9 +191,9 @@ class BidirectionalAttentionFlow(Model):
             "span_end_logits": span_end_logits,
             "best_span": best_span,
             "qc_score": qc_score,
-            "qc_score_sp": qc_score_sp,
-            "gate_probs": pred_sent_probs[:, 1].view(batch_size, num_spans), #[B, num_span]
-            "evd_self_attention_score": g_att_score
+            #"qc_score_sp": qc_score_sp,
+            #"gate_probs": pred_sent_probs[:, 1].view(batch_size, num_spans), #[B, num_span]
+            #"evd_self_attention_score": g_att_score
         }
         if not self_att_score is None:
             output_dict['self_attention_score'] = self_att_score
@@ -271,7 +266,7 @@ class BidirectionalAttentionFlow(Model):
 
                 if answer_texts:
                     self._squad_metrics(best_span_string, answer_texts)
-            self._f1_metrics(pred_sent_probs, sent_labels.view(-1), gate_mask.view(-1))
+            #self._f1_metrics(pred_sent_probs, sent_labels.view(-1))
             output_dict['question_tokens'] = question_tokens
             output_dict['passage_tokens'] = passage_tokens
             output_dict['token_spans_sp'] = token_spans_sp
@@ -347,15 +342,6 @@ class SpanGate(nn.Module):
         batch_size, num_spans, max_batch_span_width = spans_mask.size()
         # Shape: (batch_size * num_spans, embedding_dim)
         max_pooled_span_emb = torch.max(spans_tensor, dim=1)[0]
-        '''
-        # Shape: (batch_size * num_spans, max_batch_span_width)
-        group_spans_mask = spans_mask.view(batch_size * num_spans, max_batch_span_width)
-        # Shape: (batch_size * num_spans, 1)
-        valid_spans = (torch.sum(group_spans_mask, dim=-1) >= 1).float()[:, None]
-        group_spans_mask = group_spans_mask + (1. - valid_spans)
-        # Shape: (batch_size * num_spans, embedding_dim)
-        max_pooled_span_emb = util.get_final_encoder_states(spans_tensor, group_spans_mask, True)
-        '''
 
         # self attention on spans representation
         # shape: (batch_size, num_spans, embedding_dim)
@@ -394,7 +380,7 @@ class SpanGate(nn.Module):
         # attended_span_embeddings = attended_span_embeddings * gate.unsqueeze(-1).float()
 
         #return gate_logit, gate_prob, new_gate
-        return gate_logit, gate_prob, new_gate, max_pooled_span_mask, att_score
+        return gate_logit, gate_prob, new_gate, att_score
 
 
 class LockedDropout(nn.Module):

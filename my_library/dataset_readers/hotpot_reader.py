@@ -204,12 +204,18 @@ class HotpotDatasetReader(DatasetReader):
                  token_indexers: Dict[str, TokenIndexer] = None,
                  para_limit: int = 2250,
                  sent_limit: int = 80,
+                 coref_type: str = 'allen',
                  lazy: bool = False) -> None:
         super().__init__(lazy)
         self._tokenizer = tokenizer or WordTokenizer()
         self._token_indexers = token_indexers or {'tokens': SingleIdTokenIndexer()}
         self._para_limit = para_limit
         self.count = 0
+        if coref_type == 'allen':
+            self.coref_key = 'coref_clusters'
+        elif coref_type == 'spacy':
+            self.coref_key = 'spacy_coref_clusters'
+
 
     @staticmethod
     def find_all_span_starts(answer, context):
@@ -227,7 +233,7 @@ class HotpotDatasetReader(DatasetReader):
         article_id = article['_id']
         paragraphs = article['context']
         dependency_paragraphs = article['golden_head']
-        coref_clusters = article.get('coref_clusters', None)
+        coref_clusters = article.get(self.coref_key, None)
         concat_article = ""
         passage_tokens = []
         supporting_facts = []

@@ -1,5 +1,6 @@
 from torch.autograd import Variable
 from typing import Any, Dict, List, Optional
+import numpy as np
 import torch
 from torch.nn.functional import nll_loss
 from torch import nn
@@ -8,13 +9,15 @@ from allennlp.data import Vocabulary
 from allennlp.models.model import Model
 from allennlp.modules import Highway
 from allennlp.modules import Seq2SeqEncoder, TextFieldEmbedder
+from allennlp.modules.matrix_attention import LinearMatrixAttention
 from allennlp.nn import util, InitializerApplicator, RegularizerApplicator
 from allennlp.training.metrics import F1Measure, SquadEmAndF1, Average
 from my_library.models.utils import convert_sequence_to_spans, convert_span_to_sequence
-from my_library.metrics import AttF1Measure
+from my_library.metrics import AttF1Measure, SquadEmAndF1_RT
+from my_library.modules import PointerNetDecoder
 
 
-@Model.register("hotpot_legacy")
+@Model.register("hotpot_legacy_rl")
 class BidirectionalAttentionFlow(Model):
     def __init__(self, vocab: Vocabulary,
                  text_field_embedder: TextFieldEmbedder,
@@ -67,7 +70,11 @@ class BidirectionalAttentionFlow(Model):
             nn.Linear(encoding_dim * 4, encoding_dim),
             nn.ReLU()
         )
-        #self.self_att = BiAttention(encoding_dim, dropout, strong_sup=strong_sup)
+        self.linear_3 = nn.Sequential(
+            nn.Linear(encoding_dim * 4, encoding_dim),
+            nn.ReLU()
+        )
+        self.self_att = BiAttention(encoding_dim, dropout, strong_sup=strong_sup)
         self._gate_sent_encoder = gate_sent_encoder
         self._gate_self_attention_layer = gate_self_attention_layer
 
@@ -77,9 +84,9 @@ class BidirectionalAttentionFlow(Model):
 
         self.linear_type = nn.Linear(encoding_dim * 3, 3)
 
-        self._squad_metrics = SquadEmAndF1()
+        self._squad_metrics = SquadEmAndF1_RT()
 
-        self._f1_metrics = F1Measure(1)
+        self._f1_metrics = AttF1Measure(0.5)
 
         self._coref_f1_metric = AttF1Measure(0.1)
 
@@ -87,7 +94,8 @@ class BidirectionalAttentionFlow(Model):
                                'start_loss': Average(),
                                'end_loss': Average(),
                                'type_loss': Average(),
-                               'strong_sup_loss': Average()}
+                               'strong_sup_loss': Average(),
+                               'rl_loss': Average()}
         if self._strong_sup:
             self._loss_trackers['coref_sup_loss'] = Average()
 
@@ -133,31 +141,25 @@ class BidirectionalAttentionFlow(Model):
         # Shape(spans_mask): (batch_size, num_spans, max_batch_span_width)
         spans_rep_sp, spans_mask = convert_sequence_to_spans(modeled_passage_sp, sentence_spans)
         spans_rep, _ = convert_sequence_to_spans(modeled_passage, sentence_spans)
-        # Shape(gate_logit): (batch_size * num_spans, 2)
+        # Shape(seq_logprobs): (batch_size,)
         # Shape(gate): (batch_size * num_spans, 1)
-        # Shape(pred_sent_probs): (batch_size * num_spans, 2)
-        # Shape(gate_mask): (batch_size, num_spans)
+        # Shape(new_gate): (batch_size * num_spans, 2)
+        # Shape(gate_mask): (batch_size * num_spans,)
         #gate_logit, gate, pred_sent_probs = self._span_gate(spans_rep_sp, spans_mask)
-        gate_logit, gate, pred_sent_probs, gate_mask, g_att_score = self._span_gate(spans_rep_sp, spans_mask,
-                                                                         self._gate_self_attention_layer,
-                                                                         self._gate_sent_encoder)
+        seq_logprobs, gate, new_gate, gate_mask, g_att_score = self._span_gate(spans_rep_sp, spans_mask,
+                                                                  ques_output_sp, ques_mask,
+                                                                  self._gate_self_attention_layer,
+                                                                  self._gate_sent_encoder)
         batch_size, num_spans, max_batch_span_width = spans_mask.size()
 
-        strong_sup_loss = F.nll_loss(F.log_softmax(gate_logit, dim=-1).view(batch_size * num_spans, -1),
-                                     sent_labels.long().view(batch_size * num_spans), ignore_index=-1)
+        #strong_sup_loss = F.nll_loss(F.log_softmax(gate_logit, dim=-1).view(batch_size * num_spans, -1),
+        #                             sent_labels.long().view(batch_size * num_spans), ignore_index=-1)
+        strong_sup_loss = torch.tensor(0.)
 
-        gate = (gate >= 0.3).long()
-        spans_rep = spans_rep * gate.unsqueeze(-1).float()
+        spans_rep = spans_rep * gate.unsqueeze(-1)
         attended_sent_embeddings = convert_span_to_sequence(modeled_passage_sp, spans_rep, spans_mask)
 
         modeled_passage = attended_sent_embeddings + modeled_passage
-        '''
-        # residual, Apply gate on coref_mask
-        modeled_passage = attended_sent_embeddings + modeled_passage
-        gate_sent = gate.expand(batch_size * num_spans, max_batch_span_width)
-        gate_sent = convert_span_to_sequence(modeled_passage_sp, gate_sent, spans_mask).squeeze(2)
-        gated_context_mask = context_mask * gate_sent.float()
-        '''
 
         if self._strong_sup:
             #self_att_passage = self._self_attention_layer(modeled_passage, context_mask)
@@ -172,9 +174,9 @@ class BidirectionalAttentionFlow(Model):
             self_att_passage = self._self_attention_layer(modeled_passage, context_mask)
             modeled_passage = modeled_passage + self_att_passage[0]
             self_att_score = self_att_passage[2]
-            # modeled_passage = modeled_passage + \
-            #                   self.linear_2(self.self_att(modeled_passage, modeled_passage, context_mask))
             '''
+            modeled_passage = modeled_passage + \
+                              self.linear_3(self.self_att(modeled_passage, modeled_passage, context_mask)[0])
             self_att_score = None
 
         output_start = self._span_start_encoder(modeled_passage, context_mask)
@@ -197,40 +199,14 @@ class BidirectionalAttentionFlow(Model):
             "best_span": best_span,
             "qc_score": qc_score,
             "qc_score_sp": qc_score_sp,
-            "gate_probs": pred_sent_probs[:, 1].view(batch_size, num_spans), #[B, num_span]
+            "gate_probs": gate.squeeze(1).view(batch_size, num_spans), #[B, num_span]
             "evd_self_attention_score": g_att_score
         }
         if not self_att_score is None:
             output_dict['self_attention_score'] = self_att_score
 
-        # Compute the loss for training.
-        if span_start is not None:
-            try:
-                start_loss = nll_loss(util.masked_log_softmax(span_start_logits, None), span_start.squeeze(-1))
-                # self._span_start_accuracy(span_start_logits, span_start.squeeze(-1))
-                end_loss = nll_loss(util.masked_log_softmax(span_end_logits, None), span_end.squeeze(-1))
-                # self._span_end_accuracy(span_end_logits, span_end.squeeze(-1))
-                # self._span_accuracy(best_span, torch.stack([span_start, span_end], -1))
-                type_loss = nll_loss(util.masked_log_softmax(predict_type, None), q_type)
-                # loss = start_loss + end_loss + type_loss
-                loss = start_loss + end_loss + type_loss + strong_sup_loss
-                # loss = strong_sup_loss
-                if self._strong_sup:
-                    loss += coref_sup_loss
-                    self._loss_trackers['coref_sup_loss'](coref_sup_loss)
-                #print('start_loss:{} end_loss:{} type_loss:{}'.format(start_loss,end_loss,type_loss))
-                self._loss_trackers['loss'](loss)
-                self._loss_trackers['start_loss'](start_loss)
-                self._loss_trackers['end_loss'](end_loss)
-                self._loss_trackers['type_loss'](type_loss)
-                self._loss_trackers['strong_sup_loss'](strong_sup_loss)
-                output_dict["loss"] = loss
-
-            except RuntimeError:
-                print('\n meta_data:', metadata)
-                print(span_start_logits.shape)
-
         # Compute the EM and F1 on SQuAD and add the tokenized input to the output.
+        # Compute before loss for rl
         if metadata is not None:
             output_dict['best_span_str'] = []
             output_dict['answer_texts'] = []
@@ -241,6 +217,8 @@ class BidirectionalAttentionFlow(Model):
             sent_labels_list = []
             coref_clusters = []
             ids = []
+            ems = []
+            f1s = []
             count_yes = 0
             count_no = 0
             for i in range(batch_size):
@@ -270,8 +248,21 @@ class BidirectionalAttentionFlow(Model):
                 output_dict['answer_texts'].append(answer_texts)
 
                 if answer_texts:
-                    self._squad_metrics(best_span_string, answer_texts)
-            self._f1_metrics(pred_sent_probs, sent_labels.view(-1), gate_mask.view(-1))
+                    em, f1 = self._squad_metrics(best_span_string, answer_texts)
+                    ems.append(em)
+                    f1s.append(f1)
+            # self._f1_metrics(new_gate, sent_labels.view(-1))
+            evd_TP, evd_NP, evd_NT = self._f1_metrics(gate.squeeze(1).view(batch_size, num_spans),
+                                                      sent_labels,
+                                                      mask=gate_mask,
+                                                      dim=1)
+            print("TP:", evd_TP)
+            print("NP:", evd_NP)
+            print("NT:", evd_NT)
+            #print("sent label:", sent_labels)
+            evd_ps = np.array(evd_TP) / (np.array(evd_NP) + 1e-13)
+            evd_rs = np.array(evd_TP) / (np.array(evd_NT) + 1e-13)
+            evd_f1s = 2. * ((evd_ps * evd_rs) / (evd_ps + evd_rs + 1e-13))
             output_dict['question_tokens'] = question_tokens
             output_dict['passage_tokens'] = passage_tokens
             output_dict['token_spans_sp'] = token_spans_sp
@@ -279,6 +270,42 @@ class BidirectionalAttentionFlow(Model):
             output_dict['sent_labels'] = sent_labels_list
             output_dict['coref_clusters'] = coref_clusters
             output_dict['_id'] = ids
+
+        # Compute the loss for training.
+        if span_start is not None:
+            try:
+                start_loss = nll_loss(util.masked_log_softmax(span_start_logits, None), span_start.squeeze(-1))
+                # self._span_start_accuracy(span_start_logits, span_start.squeeze(-1))
+                end_loss = nll_loss(util.masked_log_softmax(span_end_logits, None), span_end.squeeze(-1))
+                # self._span_end_accuracy(span_end_logits, span_end.squeeze(-1))
+                # self._span_accuracy(best_span, torch.stack([span_start, span_end], -1))
+                type_loss = nll_loss(util.masked_log_softmax(predict_type, None), q_type)
+                # rl loss = -log(P) * (R - baseline)
+                rs = seq_logprobs.new_tensor(f1s) # shape: (batch_size,)
+                #rs = seq_logprobs.new_tensor(evd_f1s) # shape: (batch_size,)
+                rs_baseline = torch.mean(rs) + float(sum(evd_f1s) == 0) # shape: ()
+                #print("rs:", rs)
+                #print("b:", rs_baseline)
+                #print("adv:", rs - rs_baseline)
+                rl_loss = -torch.mean(seq_logprobs * (rs - rs_baseline))
+                # loss = start_loss + end_loss + type_loss
+                loss = start_loss + end_loss + type_loss + strong_sup_loss + rl_loss
+                # loss = strong_sup_loss
+                if self._strong_sup:
+                    loss += coref_sup_loss
+                    self._loss_trackers['coref_sup_loss'](coref_sup_loss)
+                #print('start_loss:{} end_loss:{} type_loss:{}'.format(start_loss,end_loss,type_loss))
+                self._loss_trackers['loss'](loss)
+                self._loss_trackers['start_loss'](start_loss)
+                self._loss_trackers['end_loss'](end_loss)
+                self._loss_trackers['type_loss'](type_loss)
+                self._loss_trackers['strong_sup_loss'](strong_sup_loss)
+                self._loss_trackers['rl_loss'](rl_loss)
+                output_dict["loss"] = loss
+
+            except RuntimeError:
+                print('\n meta_data:', metadata)
+                print(span_start_logits.shape)
 
         return output_dict
 
@@ -331,15 +358,17 @@ class BidirectionalAttentionFlow(Model):
 class SpanGate(nn.Module):
     def __init__(self, span_dim):
         super().__init__()
-        self.modeled_gate = nn.Sequential(
-            nn.Linear(span_dim, 100),
-            nn.ReLU(),
-            nn.Linear(100, 2)
-        )
+        self.evd_decoder = PointerNetDecoder(LinearMatrixAttention(span_dim, span_dim, "x,y,x*y"),
+                                             memory_dim=span_dim,
+                                             aux_input_dim=None,#span_dim,
+                                             beam_size=3,
+                                             max_decoding_steps=5)
 
     def forward(self,
                 spans_tensor: torch.FloatTensor,
                 spans_mask: torch.FloatTensor,
+                question_tensor: torch.FloatTensor,
+                question_mask: torch.FloatTensor,
                 self_att_layer: Seq2SeqEncoder,
                 sent_encoder: Seq2SeqEncoder):
 
@@ -362,39 +391,55 @@ class SpanGate(nn.Module):
         max_pooled_span_emb = max_pooled_span_emb.view(batch_size, num_spans, spans_tensor.size(2))
         # shape: (batch_size, num_spans)
         max_pooled_span_mask = (torch.sum(spans_mask, dim=-1) >= 1).float()
+        '''
         # shape: (batch_size, num_spans, embedding_dim)
         max_pooled_span_emb = sent_encoder(max_pooled_span_emb, max_pooled_span_mask)
         # shape: (batch_size, num_spans, embedding_dim)
         att_max_pooled_span_emb, _, att_score = self_att_layer(max_pooled_span_emb, max_pooled_span_mask)
         max_pooled_span_emb = max_pooled_span_emb + att_max_pooled_span_emb
-        # Shape: (batch_size * num_spans, embedding_dim)
-        max_pooled_span_emb = max_pooled_span_emb.view(batch_size*num_spans, spans_tensor.size(2))
+        '''
+        att_score = None
 
-        # Shape: (batch_size * num_spans, 2)
-        gate_logit = self.modeled_gate(max_pooled_span_emb)
-        gate_prob = F.softmax(gate_logit, dim=-1)
-        gate_prob = torch.chunk(gate_prob, 2, dim=-1)[1].view(batch_size * num_spans, -1)
+        # extract the final hidden states as the question vector
+        # Shape: (batch_size, embedding_dim)
+        question_emb = util.get_final_encoder_states(question_tensor, question_mask, True)
 
-        # positive_labels = span_labels.long() * has_span_mask.long().squeeze()
-        # negative_labels = (1 - span_labels.long()) * has_span_mask.long().squeeze()
-        # positive_num = torch.sum(positive_labels)
-        # negative_num = torch.sum(negative_labels)
+        # decode the most likely evidence path
+        # shape (all_predictions): (batch_size, beam_size, num_decoding_steps) or (batch_size, num_decoding_steps)
+        # shape (seq_logprobs): (batch_size, beam_size) or (batch_size,)
+        all_predictions, seq_logprobs = self.evd_decoder(max_pooled_span_emb,
+                                                         max_pooled_span_mask,
+                                                         question_emb,
+                                                         aux_input=None,#question_emb,
+                                                         transition_mask=None)
+        if not self.training:
+            # take the seq with largest score in the beam
+            # shape (all_predictions): (batch_size, num_decoding_steps)
+            # shape (seq_logprobs): (batch_size,)
+            all_predictions, seq_logprobs = all_predictions[:, 0, :], seq_logprobs[:, 0]
+        #print("batch:", batch_size)
+        #print("predict num:", torch.sum((all_predictions > 0).float(), dim=1))
+        print("all prediction:", all_predictions)
 
-        # print(positive_labels, negative_labels)
+        # build the gate. The dim is set to 1 + num_spans to account for the end embedding
+        # shape: (batch_size, 1+num_spans)
+        gate = spans_tensor.new_zeros((batch_size, 1+num_spans))
+        gate.scatter_(1, all_predictions, 1.)
+        # remove the column for end embedding
+        # shape: (batch_size, num_spans)
+        gate = gate[:, 1:]
+        #print("gate:", gate)
+        #print("real num:", torch.sum(gate, dim=1))
+        #print("seq probs:", torch.exp(seq_logprobs))
 
-        # print(positive_num, negative_num)
-        # print(torch.sum(gate.float().view(-1) * positive_labels.float().view(-1)) / positive_num.float())
-        # print(torch.sum(gate.float().view(-1) * negative_labels.float().view(-1)) / negative_num.float())
+        # shape: (batch_size * num_spans, 1)
+        gate = gate.reshape(batch_size * num_spans, 1)
 
-        # print(torch.sum(positive_labels.view(-1) * gate.view(-1)))
-        dumb_gate = torch.full_like(gate_prob.view(batch_size * num_spans, -1).float(), 0.3)
-        new_gate = torch.cat([dumb_gate, gate_prob], dim=-1)
+        # two-class one hot for computing F1 score
+        # shape: (batch_size * num_spans, 2)
+        new_gate = torch.cat([1-gate, gate], dim=-1)
 
-        # gate = (gate >= 0.3).long()
-        # attended_span_embeddings = attended_span_embeddings * gate.unsqueeze(-1).float()
-
-        #return gate_logit, gate_prob, new_gate
-        return gate_logit, gate_prob, new_gate, max_pooled_span_mask, att_score
+        return seq_logprobs, gate, new_gate, max_pooled_span_mask, att_score
 
 
 class LockedDropout(nn.Module):
