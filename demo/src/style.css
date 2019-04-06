@@ -31,6 +31,22 @@ span.support {
     border: 0.15em dotted rgb(72, 163, 243);
     border-radius: 10px;
 }
+span.corr_support {
+    padding-left: 4px;
+    padding-right: 4px;
+    padding-bottom: 4px;
+    padding-top: 4px;
+    border: 0.15em solid blue;
+    border-radius: 10px;
+}
+span.pred_support {
+    padding-left: 4px;
+    padding-right: 4px;
+    padding-bottom: 4px;
+    padding-top: 4px;
+    border: 0.15em dotted grey;
+    border-radius: 10px;
+}
 
 span {
     margin-top: 8px;

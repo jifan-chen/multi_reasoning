@@ -25,6 +25,8 @@ const examples = [
   }
 ];
 
+const dataset_type = ["train", "dev"];
+
 // TODO: This determines what text shows up in the select box for each example.  The input to
 // this function will be one of the items from the `examples` list above.
 function summarizeExample(example) {
@@ -41,8 +43,21 @@ const description = (
 class ModelInput extends React.Component {
   constructor(props) {
     super(props);
+    this.state = {
+        dataset: null
+    }
     this.handleListChange = this.handleListChange.bind(this);
     this.onClick = this.onClick.bind(this);
+    this.datasetChange = this.datasetChange.bind(this);
+
+  }
+
+  datasetChange(e) {
+    if (e.target.value !== "") {
+      this.setState({
+          dataset: dataset_type[e.target.value],
+      });
+    }
   }
 
   handleListChange(e) {
@@ -50,8 +65,11 @@ class ModelInput extends React.Component {
       // TODO: This gets called when the select box gets changed.  You want to set the values of
       // your input boxes with the content in your examples.
       this.instance_idx.value = examples[e.target.value].instance_idx
-      this.dataset.value = examples[e.target.value].dataset
+      // this.dataset.value = examples[e.target.value].dataset
       this.th.value = examples[e.target.value].th
+      this.setState({
+          dataset: examples[e.target.value].dataset,
+      });
     }
   }
 
@@ -61,7 +79,8 @@ class ModelInput extends React.Component {
     // TODO: You need to map the values in your input boxes to json values that get sent to your
     // predictor.  The keys in this dictionary need to match what your predictor is expecting to receive.
     runModel({instance_idx: this.instance_idx.value,
-        dataset: this.dataset.value,
+        // dataset: this.dataset.value,
+        dataset: this.state.dataset,
         th: this.th.value});
   }
 
@@ -91,9 +110,20 @@ class ModelInput extends React.Component {
          * here to match the input variable names in your model.
          */}
 
-        <div className="form__field">
+    {/*<div className="form__field">
           <label>Dataset(train/dev)</label>
           <textarea ref={(x) => this.dataset = x} type="text" autoFocus="true"></textarea>
+        </div>*/}
+        <div className="form__field">
+          <label>Dataset</label>
+          <select disabled={outputState === "working"} onChange={this.datasetChange}>
+              <option value="">Select a dataset...</option>
+              {dataset_type.map((t, index) => {
+                return (
+                    <option value={index} key={index}>{t + "..."}</option>
+                );
+              })}
+          </select>
         </div>
         <div className="form__field">
           <label>Attention Display Threshold</label>

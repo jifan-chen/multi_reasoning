@@ -158,6 +158,7 @@ class BidirectionalAttentionFlow(Model):
             # modeled_passage = modeled_passage + \
             #                   self.linear_2(self.self_att(modeled_passage, modeled_passage, context_mask))
 
+        # Shape(span_start_logits): (batch_size, context_length)
         output_start = self._span_start_encoder(modeled_passage, context_mask)
         span_start_logits = self.linear_start(output_start).squeeze(2) - 1e30 * (1 - context_mask)
         output_end = torch.cat([modeled_passage, output_start], dim=2)
@@ -181,26 +182,34 @@ class BidirectionalAttentionFlow(Model):
 
         # Compute the loss for training.
         if span_start is not None:
-            try:
-                start_loss = nll_loss(util.masked_log_softmax(span_start_logits, None), span_start.squeeze(-1))
-                end_loss = nll_loss(util.masked_log_softmax(span_end_logits, None), span_end.squeeze(-1))
-                type_loss = nll_loss(util.masked_log_softmax(predict_type, None), q_type)
-                # loss = start_loss + end_loss + type_loss
-                loss = start_loss + end_loss + type_loss + strong_sup_loss
-                # loss = strong_sup_loss
-                if self._strong_sup:
-                    loss += coref_sup_loss
-                    self._loss_trackers['coref_sup_loss'](coref_sup_loss)
-                self._loss_trackers['loss'](loss)
-                self._loss_trackers['start_loss'](start_loss)
-                self._loss_trackers['end_loss'](end_loss)
-                self._loss_trackers['type_loss'](type_loss)
-                self._loss_trackers['strong_sup_loss'](strong_sup_loss)
-                output_dict["loss"] = loss
+            span_start = span_start.float()
+            span_end = span_end.float()
+            loss_mask = (torch.sum(span_start, dim=-1) > 0).float()
+            num_valid_loss = torch.sum(loss_mask)
+            # print(torch.sum(span_start, dim=-1))
+            # print(num_valid_loss)
+            # print(-torch.log(torch.sum(span_start_logits * span_start, dim=-1) + 1e-10))
+            start_loss = torch.sum(-torch.log(torch.sum(F.softmax(span_start_logits) * span_start, dim=-1) + 1e-10)
+                                   * loss_mask) / num_valid_loss
+            end_loss = torch.sum(
+                -torch.log(torch.sum(F.softmax(span_start_logits) * span_end, dim=-1) + 1e-10) * loss_mask) / num_valid_loss
+            # print(start_loss, end_loss)
+            # start_loss = nll_loss(util.masked_log_softmax(span_start_logits, None), span_start.squeeze(-1))
+            # end_loss = nll_loss(util.masked_log_softmax(span_end_logits, None), span_end.squeeze(-1))
 
-            except RuntimeError:
-                print('\n meta_data:', metadata)
-                print(span_start_logits.shape)
+            type_loss = nll_loss(util.masked_log_softmax(predict_type, None), q_type)
+            loss = start_loss + end_loss + type_loss
+            # loss = start_loss + end_loss + type_loss + strong_sup_loss
+            # loss = strong_sup_loss
+            if self._strong_sup:
+                loss += coref_sup_loss
+                self._loss_trackers['coref_sup_loss'](coref_sup_loss)
+            self._loss_trackers['loss'](loss)
+            self._loss_trackers['start_loss'](start_loss)
+            self._loss_trackers['end_loss'](end_loss)
+            self._loss_trackers['type_loss'](type_loss)
+            self._loss_trackers['strong_sup_loss'](strong_sup_loss)
+            output_dict["loss"] = loss
 
         # Compute the EM and F1 on SQuAD and add the tokenized input to the output.
         if metadata is not None:

@@ -1,8 +1,7 @@
 {
   "dataset_reader": {
     "type": "hotpot_reader",
-    "lazy": true,
-    "para_limit": 2250,
+    "lazy": false,
     "token_indexers": {
       "tokens": {
         "type": "single_id",
@@ -21,7 +20,6 @@
   "validation_dataset_reader": {
     "type": "hotpot_reader",
     "lazy": false,
-    "para_limit": 2250,
     "token_indexers": {
       "tokens": {
         "type": "single_id",
@@ -37,8 +35,8 @@
     }
   },
 
-  "train_data_path": "/backup2/jfchen/data/hotpot/train/train_coref.json",
-  "validation_data_path": "/backup2/jfchen/data/hotpot/dev/dev_distractor_coref.json",
+  "train_data_path": "/backup2/jfchen/data/hotpot/test/hotpot_test_100.json",
+  "validation_data_path": "/backup2/jfchen/data/hotpot/test/hotpot_test_100.json",
 
   "datasets_for_vocab_creation": [],
 
@@ -48,7 +46,7 @@
     },
 
   "model": {
-    "type": "hotpot_legacy",
+    "type": "hotpot_decoupled",
 
     "strong_sup": false,
 

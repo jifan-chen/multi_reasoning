@@ -59,7 +59,7 @@
   "validation_data_path": "/backup2/jfchen/data/hotpot/dev/dev_distractor_coref.json",
 
   "model": {
-    "type": "hotpot_legacy",
+    "type": "hotpot_decoupled",
 
     "strong_sup": false,
 
@@ -202,8 +202,8 @@
 
   "trainer": {
     "num_epochs": 100,
-    "patience": 10,
-    "validation_metric": "+em",
+    "patience": 5,
+    "validation_metric": "-loss",
     "cuda_device": 0,
     "learning_rate_scheduler": {
       "type": "reduce_on_plateau",
@@ -213,8 +213,7 @@
     },
 
     "optimizer": {
-      "type": "sgd",
-      "lr": 0.1
+      "type": "adam"
     }
   }
 

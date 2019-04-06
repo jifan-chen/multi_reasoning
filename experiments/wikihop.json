@@ -1,0 +1,201 @@
+{
+  "dataset_reader": {
+    "type": "wikihop_reader",
+    "lazy": true,
+    "token_indexers": {
+      "tokens": {
+        "type": "single_id",
+        "lowercase_tokens": true
+      },
+      "token_characters": {
+        "type": "characters",
+        "character_tokenizer": {
+          "byte_encoding": "utf-8"
+        },
+        "min_padding_length": 5
+      }
+    }
+  },
+
+  "validation_dataset_reader": {
+    "type": "wikihop_reader",
+    "lazy": true,
+    "token_indexers": {
+      "tokens": {
+        "type": "single_id",
+        "lowercase_tokens": true
+      },
+      "token_characters": {
+        "type": "characters",
+        "character_tokenizer": {
+          "byte_encoding": "utf-8"
+        },
+        "min_padding_length": 5
+      }
+    }
+  },
+
+  "train_data_path": "/backup2/jfchen/data/wikihop/train.json",
+  "validation_data_path": "/backup2/jfchen/data/wikihop/dev.json",
+
+  "datasets_for_vocab_creation": [],
+
+  "vocabulary": {
+    "directory_path": "/backup2/jfchen/data/wikihop/vocabulary",
+    "extend": false
+    },
+
+  "model": {
+    "type": "hotpot_decoupled",
+
+    "strong_sup": false,
+
+    "text_field_embedder": {
+      "token_embedders": {
+        "tokens": {
+          "type": "embedding",
+          "pretrained_file": "/backup2/jfchen/data/word_emb/glove.840B.300d.txt",
+          "embedding_dim": 300,
+          "trainable": false
+        },
+        "token_characters": {
+                "type": "character_encoding",
+                "embedding": {
+                "num_embeddings": 262,
+                "embedding_dim": 8
+                },
+                "encoder": {
+                "type": "cnn",
+                "embedding_dim": 8,
+                "num_filters": 100,
+                "ngram_filter_sizes": [5]
+                },
+                "dropout": 0.0
+            }
+
+      }
+    },
+
+    "self_attention_layer":{
+      "type": "multi_head_self_attention_with_sup",
+      "num_heads": 2,
+      "input_dim": 200,
+      "attention_dim": 200,
+      "values_dim": 200
+    },
+
+    "phrase_layer": {
+      "type": "gru",
+      "bidirectional": true,
+      "input_size": 400,
+      "hidden_size": 100,
+      "num_layers": 1,
+      "dropout": 0.0
+    },
+
+    "phrase_layer_sp": {
+      "type": "gru",
+      "bidirectional": true,
+      "input_size": 400,
+      "hidden_size": 100,
+      "num_layers": 1,
+      "dropout": 0.0
+    },
+
+    "modeling_layer": {
+      "type": "gru",
+      "bidirectional": true,
+      "input_size": 200,
+      "hidden_size": 100,
+      "num_layers": 1,
+      "dropout": 0.0
+    },
+
+    "modeling_layer_sp": {
+      "type": "gru",
+      "bidirectional": true,
+      "input_size": 200,
+      "hidden_size": 100,
+      "num_layers": 1,
+      "dropout": 0.0
+    },
+
+    "span_start_encoder": {
+      "type": "gru",
+      "bidirectional": true,
+      "input_size": 200,
+      "hidden_size": 100,
+      "num_layers": 1,
+      "dropout": 0.0
+    },
+
+    "span_end_encoder": {
+      "type": "gru",
+      "bidirectional": true,
+      "input_size": 400,
+      "hidden_size": 100,
+      "num_layers": 1,
+      "dropout": 0.0
+    },
+
+    "span_self_attentive_encoder": {
+      "type": "stacked_self_attention",
+      "num_attention_heads": 2,
+      "input_dim": 200,
+      "hidden_dim": 200,
+      "projection_dim": 200,
+      "feedforward_hidden_dim": 200,
+      "num_layers": 1
+    },
+
+    "type_encoder": {
+      "type": "gru",
+      "bidirectional": true,
+      "input_size": 400,
+      "hidden_size": 100,
+      "num_layers": 1,
+      "dropout": 0.0
+    },
+
+    "dropout": 0.2
+  },
+
+
+  "iterator": {
+    "type": "bucket",
+    "sorting_keys": [
+      [
+        "passage",
+        "num_tokens"
+      ]
+    ],
+    "max_instances_in_memory": 1000,
+    "instances_per_epoch": 10000,
+    "batch_size": 10
+  },
+
+  "validation_iterator": {
+    "type": "basic",
+    "batch_size": 20
+  },
+
+  "trainer": {
+    "num_epochs": 20,
+    "patience": 10,
+    "validation_metric": "-loss",
+    "cuda_device": 0,
+    "learning_rate_scheduler": {
+      "type": "reduce_on_plateau",
+      "factor": 0.5,
+      "mode": "max",
+      "patience": 2
+    },
+
+    "optimizer": {
+      "type": "adam"
+
+    }
+  }
+
+}
+

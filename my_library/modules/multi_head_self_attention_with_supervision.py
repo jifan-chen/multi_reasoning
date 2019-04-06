@@ -167,6 +167,16 @@ class MultiHeadSelfAttentionWithSup(Seq2SeqEncoder):
             attention_for_sup = mask_sp.float() / (tot + (tot == 0).float())
             loss = torch.tensor(0.)
             '''
+            '''
+            if self.training:
+                pass
+            else:
+                tot = torch.sum(mask_sp.float(), dim=-1, keepdim=True)
+                has_coref = (tot == 1).float()
+                norm_mask_sp = mask_sp.float() / (tot + (1 - has_coref))
+                #attention_for_sup = attention_for_sup * (1 - has_coref) + norm_mask_sp * has_coref
+                attention_for_sup = norm_mask_sp
+            '''
             att_sup_metric(attention_for_sup, mask_sp, square_mask)
         else:
             loss = None
