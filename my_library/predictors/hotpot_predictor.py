@@ -43,7 +43,7 @@ def calc_em_and_f1(best_span_string, answer_strings):
 
 
 def calc_evd_f1(pred_labels, gold_labels):
-    evd_metric = AttF1Measure(0.3)
+    evd_metric = AttF1Measure(0.5) # We just use 0.5 as the TH since pred_labels should only contain 0 and 1
     T_P, N_P, N_T = evd_metric(torch.tensor(pred_labels).float(), torch.tensor(gold_labels).float())
     precision = float(T_P) / float(N_P + 1e-13)
     recall = float(T_P) / float(N_T + 1e-13)
@@ -93,8 +93,14 @@ class HotpotPredictor(Predictor):
             train = json.load(f)
         with open('/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_coref.json', 'r') as f:
             dev = json.load(f)
+        with open('/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_coref_easy.json', 'r') as f:
+            easy_dev = json.load(f)
+        with open('/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_coref_hard.json', 'r') as f:
+            hard_dev = json.load(f)
         self.demo_dataset = {'train': train,
-                             'dev': dev}
+                             'dev': dev,
+                             'easy_dev': easy_dev,
+                             'hard_dev': hard_dev}
 
     @overrides
     def _json_to_instance(self, json_dict: JsonDict) -> Instance:
@@ -137,19 +143,21 @@ class HotpotPredictor(Predictor):
         token_spans_sp      = output['token_spans_sp']
         token_spans_sent    = output['token_spans_sent']
         sent_labels         = output['sent_labels']
+        pred_sent_labels    = output.get('pred_sent_labels', None)
         coref_clusters      = output['coref_clusters']
         self_att_scores     = output.get('self_attention_score', None)
         evd_self_att_scores = output.get('evd_self_attention_score', None)
         qc_scores           = output['qc_score']
         qc_scores_sp        = output.get('qc_score_sp', None)
         gate_probs          = output.get('gate_probs', None)
+        pred_sent_orders    = output.get('pred_sent_orders', None)
         answer_texts        = output['answer_texts']
         best_span_str       = output['best_span_str']
         article_id          = output['_id']
         em, f1 = calc_em_and_f1(best_span_str, answer_texts)
-        if not gate_probs is None:
-            gate_probs = np.array(gate_probs)
-            evd_prec, evd_recl, evd_f1 = calc_evd_f1(gate_probs, sent_labels)
+        if not pred_sent_labels is None:
+            pred_sent_labels = np.array(pred_sent_labels)
+            evd_prec, evd_recl, evd_f1 = calc_evd_f1(pred_sent_labels, sent_labels)
         else:
             evd_prec, evd_recl, evd_f1 = None, None, None
         evd_measure = {'prec': evd_prec, 'recl': evd_recl, 'f1': evd_f1}
@@ -181,8 +189,9 @@ class HotpotPredictor(Predictor):
                 "attns":            heads_doc_res,
                 "qc_scores":        qc_scores,
                 "qc_scores_sp":     qc_scores_sp,
-                "pred_sent_labels": (gate_probs >= 0.3).astype("int").tolist() if not gate_probs is None else None,
-                "pred_sent_probs":  gate_probs.tolist() if not gate_probs is None else None,
+                "pred_sent_labels": (pred_sent_labels).astype("int").tolist() if not pred_sent_labels is None else None,
+                "pred_sent_probs":  gate_probs if not gate_probs is None else None,
+                "pred_sent_orders": pred_sent_orders if not pred_sent_orders is None else None,
                 "evd_measure":      evd_measure,
                 "evd_attns":        evd_self_att_scores.tolist() if not evd_self_att_scores is None else None,
                 "question":         " ".join(question_tokens),

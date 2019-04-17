@@ -25,7 +25,7 @@ const examples = [
   }
 ];
 
-const dataset_type = ["train", "dev"];
+const dataset_type = ["train", "dev", "easy_dev", "hard_dev"];
 
 // TODO: This determines what text shows up in the select box for each example.  The input to
 // this function will be one of the items from the `examples` list above.

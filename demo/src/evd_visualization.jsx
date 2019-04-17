@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactTooltip from 'react-tooltip'
 import Collapsible from 'react-collapsible'
+import { Highlight } from './allenlp_src/highlight/Highlight'
 import './style.css'
 
 
@@ -91,19 +92,28 @@ class Doc extends React.Component {
                     }
                     var tip_text = [this.props.pred_sent_probs[i].toString()];
                     if(this.props.att_score) {
-                        tip_text.push(this.props.att_score[i].toString());
+                        tip_text.push("Heads: " + this.props.att_score[i].toString());
                     }
                     var sent_ele = <Sent class={className}
-                                    tokens={sent_tokens}
-                                    tip={tip_text}
-                                    key={i}
-                                    id={i.toString()}
-                                    onMouseOver={() => mouse_over_func(i)}
-                                    onMouseOut={() => mouse_out_func(i)}
-                                    onClick={() => click_func(i)}
-                                    style={style}
-                                    //bold={bold}
-                                />;
+                                        tokens={sent_tokens}
+                                        tip={tip_text}
+                                        key={i}
+                                        id={i.toString()}
+                                        onMouseOver={() => mouse_over_func(i)}
+                                        onMouseOut={() => mouse_out_func(i)}
+                                        onClick={() => click_func(i)}
+                                        style={style}
+                                        //bold={bold}
+                                    />;
+                    if(this.props.pred_sent_orders && this.props.pred_sent_orders[i] >= 0) {
+                        sent_ele = <Highlight
+                                        key={i}
+                                        id={this.props.pred_sent_orders[i]}
+                                        label={this.props.pred_sent_orders[i]}
+                                        labelPosition="left">
+                                        {sent_ele}
+                                   </Highlight>;
+                    }
                     return sent_ele})
             }
             <div>
@@ -162,6 +172,7 @@ export default class EvdVisualization extends React.Component {
                sent_labels={this.props.sent_labels}
                pred_sent_labels={this.props.pred_sent_labels}
                pred_sent_probs={this.props.pred_sent_probs}
+               pred_sent_orders={this.props.pred_sent_orders}
                att_score={att_score}
                tokens={this.props.doc}
                active_id={active_id}

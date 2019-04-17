@@ -38,6 +38,7 @@ class ModelOutput extends React.Component {
     var coref_data = ins['coref_clusters']
     var pred_sent_probs = ins['pred_sent_probs'];
     var pred_sent_labels = ins['pred_sent_labels'];
+    var pred_sent_orders = ins['pred_sent_orders'];
     console.log(ins);
 
     return (
@@ -124,6 +125,7 @@ class ModelOutput extends React.Component {
                   sent_labels={ins['sent_labels']}
                   pred_sent_labels={pred_sent_labels}
                   pred_sent_probs={pred_sent_probs}
+                  pred_sent_orders={pred_sent_orders}
                   att_scores={ins['evd_attns']}
                   doc={ins['doc']}
               />
