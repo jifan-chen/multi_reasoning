@@ -5,8 +5,9 @@ import numpy
 from overrides import overrides
 import torch
 from torch.nn.modules.linear import Linear
-from torch.nn.modules.rnn import LSTMCell
+from torch.nn.modules.rnn import LSTMCell, GRUCell
 from torch import nn
+from torch.nn import functional as F
 
 from allennlp.modules import Attention
 from allennlp.modules.matrix_attention.matrix_attention import MatrixAttention
@@ -46,7 +47,7 @@ class DecodeHelper_:
     def search(self,
                start_embedding: torch.Tensor,
                start_state: StateType,
-               step: StepFunctionType) -> Tuple[torch.Tensor, torch.Tensor]:
+               step: StepFunctionType) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Given a starting state and a step function, apply greedy search to find the
         target sequences.
@@ -76,9 +77,9 @@ class DecodeHelper_:
             where ``*`` means any other number of dimensions.
         Returns
         -------
-        Tuple[torch.Tensor, torch.Tensor]
-            Tuple of ``(predictions, log_probabilities)``, where ``predictions``
-            has shape ``(batch_size, max_steps)`` and ``log_probabilities``
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+            Tuple of ``(all_predictions, all_logprobs, last_log_probabilities)``, where ``all_predictions``
+            and ``all_logprobs`` has shape ``(batch_size, max_steps)``, and ``log_probabilities``
             has shape ``(batch_size,)``.
         """
         raise NotImplementedError
@@ -91,12 +92,16 @@ class GreedyHelper(DecodeHelper_):
     def search(self,
                start_embedding: torch.Tensor,
                start_state: StateType,
-               step: StepFunctionType) -> Tuple[torch.Tensor, torch.Tensor]:
+               step: StepFunctionType) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         batch_size = start_embedding.size()[0]
 
         # List of (batch_size,) tensors. One for each time step. Does not
         # include the start symbols, which are implicit.
         predictions: List[torch.Tensor] = []
+
+        # List of (batch_size,) tensors. One for each time step. The log
+        # probability corresponding to the prediction.
+        logprobs: List[torch.Tensor] = []
 
 	# Calculate the first timestep. This is done outside the main loop
         # so that we can do some initialization for the loop.
@@ -111,7 +116,10 @@ class GreedyHelper(DecodeHelper_):
             warnings.warn("Empty sequences predicted. You may want to "
                           "ensure your step function is working properly.",
                           RuntimeWarning)
-            return start_predicted_classes.unsqueeze(-1), start_log_probabilities
+            return start_predicted_classes.unsqueeze(-1), \
+                   start_log_probabilities.unsqueeze(-1), \
+                   start_log_probabilities, \
+                   state["cell_hidden"]
 
         # The log probabilities for the last time step.
         # shape: (batch_size,)
@@ -119,6 +127,7 @@ class GreedyHelper(DecodeHelper_):
 
         # shape: [(batch_size,)]
         predictions.append(start_predicted_classes)
+        logprobs.append(start_log_probabilities)
         state['hist_predictions'] = start_predicted_classes.reshape(batch_size, 1)
 
         # Log probability tensor that mandates that the end token is selected.
@@ -165,6 +174,7 @@ class GreedyHelper(DecodeHelper_):
             log_probabilities, predicted_classes = self._sample(cleaned_log_probabilities)
 
             predictions.append(predicted_classes)
+            logprobs.append(log_probabilities)
             state['hist_predictions'] = torch.cat([state['hist_predictions'],
                                                    predicted_classes.reshape(batch_size, 1)],
                                                   dim=1)
@@ -181,8 +191,10 @@ class GreedyHelper(DecodeHelper_):
         # shape: (batch_size, max_steps)
         all_predictions = torch.stack(predictions, dim=1)
         assert (all_predictions == state['hist_predictions']).all()
+        all_logprobs = torch.stack(logprobs, dim=1)
+        assert torch.allclose(torch.sum(all_logprobs, dim=-1), last_log_probabilities)
 
-        return all_predictions, last_log_probabilities
+        return all_predictions, all_logprobs, last_log_probabilities, state["cell_hidden"]
 
 
 class SamplingHelper(GreedyHelper):
@@ -211,7 +223,7 @@ class BeamSearchHelper(DecodeHelper_):
     def search(self,
                start_embedding: torch.Tensor,
                start_state: StateType,
-               step: StepFunctionType) -> Tuple[torch.Tensor, torch.Tensor]:
+               step: StepFunctionType) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Notes
             The ``batch_size`` in the input and output of the step function 
@@ -223,6 +235,10 @@ class BeamSearchHelper(DecodeHelper_):
         # List of (batch_size, beam_size) tensors. One for each time step. Does not
         # include the start symbols, which are implicit.
         predictions: List[torch.Tensor] = []
+
+        # List of (batch_size, beam_size) tensors. One for each time step. The log
+        # probability corresponding to the prediction.
+        logprobs: List[torch.Tensor] = []
 
         # List of (batch_size, beam_size) tensors. One for each time step. None for
         # the first.  Stores the index n for the parent prediction, i.e.
@@ -246,7 +262,10 @@ class BeamSearchHelper(DecodeHelper_):
             warnings.warn("Empty sequences predicted. You may want to increase the beam size or ensure "
                           "your step function is working properly.",
                           RuntimeWarning)
-            return start_predicted_classes.unsqueeze(-1), start_top_log_probabilities
+            return start_predicted_classes.unsqueeze(-1)[:, 0, :], \
+                   start_top_log_probabilities.unsqueeze(-1)[:, 0, :], \
+                   start_top_log_probabilities[:, 0], \
+                   state["cell_hidden"]
 
         # The log probabilities for the last time step.
         # shape: (batch_size, beam_size)
@@ -254,6 +273,7 @@ class BeamSearchHelper(DecodeHelper_):
 
         # shape: [(batch_size, beam_size)]
         predictions.append(start_predicted_classes)
+        logprobs.append(start_top_log_probabilities)
 
         # Log probability tensor that mandates that the end token is selected.
         # shape: (batch_size * beam_size, num_classes)
@@ -313,6 +333,10 @@ class BeamSearchHelper(DecodeHelper_):
             # Keep only the top `beam_size` beam indices.
             # shape: (batch_size, beam_size), (batch_size, beam_size)
             last_log_probabilities, topk_idxs = self._sample(last_log_probabilities)
+            # shape: (batch_size, beam_size)
+            tok_idxs_clean_logprobs = cleaned_log_probabilities.view(
+                    batch_size, self.beam_size * num_classes
+            ).gather(1, topk_idxs)
 
             # The beam indices come from a `beam_size * num_classes` dimension where the
             # indices with a common ancestor are grouped together. Hence
@@ -326,6 +350,7 @@ class BeamSearchHelper(DecodeHelper_):
             # shape: (batch_size, beam_size)
             predicted_classes = topk_idxs % num_classes
             predictions.append(predicted_classes)
+            logprobs.append(tok_idxs_clean_logprobs)
 
             # Keep only the pieces of the state tensors corresponding to the
             # ancestors created this iteration.
@@ -354,6 +379,7 @@ class BeamSearchHelper(DecodeHelper_):
         # Reconstruct the sequences.
         # shape: [(batch_size, beam_size, 1)]
         reconstructed_predictions = [predictions[-1].unsqueeze(2)]
+        reconstructed_logprobs = [logprobs[-1].unsqueeze(2)]
 
         # shape: (batch_size, beam_size)
         cur_backpointers = backpointers[-1]
@@ -361,23 +387,35 @@ class BeamSearchHelper(DecodeHelper_):
         for timestep in range(len(predictions) - 2, 0, -1):
             # shape: (batch_size, beam_size, 1)
             cur_preds = predictions[timestep].gather(1, cur_backpointers).unsqueeze(2)
+            cur_logprobs = logprobs[timestep].gather(1, cur_backpointers).unsqueeze(2)
 
             reconstructed_predictions.append(cur_preds)
+            reconstructed_logprobs.append(cur_logprobs)
 
             # shape: (batch_size, beam_size)
             cur_backpointers = backpointers[timestep - 1].gather(1, cur_backpointers)
 
         # shape: (batch_size, beam_size, 1)
         final_preds = predictions[0].gather(1, cur_backpointers).unsqueeze(2)
+        final_logprobs = logprobs[0].gather(1, cur_backpointers).unsqueeze(2)
 
         reconstructed_predictions.append(final_preds)
+        reconstructed_logprobs.append(final_logprobs)
 
         # shape: (batch_size, beam_size, max_steps)
         all_predictions = torch.cat(list(reversed(reconstructed_predictions)), 2)
+        all_logprobs = torch.cat(list(reversed(reconstructed_logprobs)), 2)
 
         assert (all_predictions == state['hist_predictions'].view(batch_size, self.beam_size, -1)).all()
+        assert torch.allclose(torch.sum(all_logprobs, dim=-1), last_log_probabilities)
 
-        return all_predictions, last_log_probabilities
+        # Keep the beam with highest score
+        all_predictions = all_predictions[:, 0, :]
+        all_logprobs = all_logprobs[:, 0, :]
+        last_log_probabilities = last_log_probabilities[:, 0]
+        final_hidden = state["cell_hidden"].reshape(batch_size, self.beam_size, -1)[:, 0, :]
+
+        return all_predictions, all_logprobs, last_log_probabilities, final_hidden
 
 
 class PointerNetDecoder(torch.nn.Module):
@@ -401,8 +439,12 @@ class PointerNetDecoder(torch.nn.Module):
                  attention: MatrixAttention,
                  memory_dim: int,
                  aux_input_dim: int = None,
+                 train_helper='sample',
+                 val_helper='beamsearch',
                  beam_size: int = 3,
-                 max_decoding_steps: int = 5) -> None:
+                 max_decoding_steps: int = 5,
+                 predict_eos: bool = True,
+                 cell: str = 'lstm') -> None:
         super(PointerNetDecoder, self).__init__()                
         # Decoder output dim needs to be the same as the encoder output dim since we initialize the
         # hidden state of the decoder with the final hidden state of the encoder.
@@ -421,7 +463,11 @@ class PointerNetDecoder(torch.nn.Module):
 
         # We then run the projected decoder input through an LSTM cell to produce
         # the next hidden state.
-        self._decoder_cell = LSTMCell(self.decoder_input_dim, self.decoder_output_dim)
+        self._cell = cell
+        if cell == 'lstm':
+            self._decoder_cell = LSTMCell(self.decoder_input_dim, self.decoder_output_dim)
+        elif cell == 'gru':
+            self._decoder_cell = GRUCell(self.decoder_input_dim, self.decoder_output_dim)
 
         # At initial step we take the trainable ``start embedding`` as input
         self._start_embedding = nn.Parameter(torch.Tensor(1, self.decoder_input_dim))
@@ -434,14 +480,25 @@ class PointerNetDecoder(torch.nn.Module):
 
         # We set the eos index to zero since the end embedding is prepended to the memory
         self._eos_idx = 0
+        self._predict_eos = predict_eos
 
+        def get_helper(helper_type):
+            if helper_type == 'sample':
+                return SamplingHelper(eos_idx=self._eos_idx,
+                                      max_steps=max_decoding_steps)
+            elif helper_type == 'greedy':
+                return GreedyHelper(eos_idx=self._eos_idx,
+                                    max_steps=max_decoding_steps)
+            elif helper_type == 'beamsearch':
+                return BeamSearchHelper(beam_size=beam_size,
+                                        eos_idx=self._eos_idx,
+                                        max_steps=max_decoding_steps)
+            else:
+                raise ValueError("Unsupported Decoding Helper!")
         # Training decoding helper
-        self._train_decoding_helper = SamplingHelper(eos_idx=self._eos_idx,
-                                                     max_steps=max_decoding_steps)
+        self._train_decoding_helper = get_helper(train_helper)
         # At prediction time, we'll use a beam search to find the best target sequence.
-        self._eval_decoding_helper = BeamSearchHelper(beam_size=beam_size,
-                                                      eos_idx=self._eos_idx,
-                                                      max_steps=max_decoding_steps)
+        self._eval_decoding_helper = get_helper(val_helper)
 
     @overrides
     def forward(self,  # type: ignore
@@ -449,7 +506,7 @@ class PointerNetDecoder(torch.nn.Module):
                 memory_mask: torch.Tensor,
                 init_hidden_state: torch.Tensor = None,
                 aux_input: torch.Tensor = None,
-                transition_mask: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
+                transition_mask: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # pylint: disable=arguments-differ
         """
         Make foward pass with decoder logic for producing the entire target sequence.
@@ -469,12 +526,13 @@ class PointerNetDecoder(torch.nn.Module):
             The mask for restricting the action space. Shape: ``[batch_size, memory_len, memory_len]``
         Returns
         -------
-        Dict[str, torch.Tensor]
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
         """
         batch_size = memory.size(0)
         start_state = self._init_decoder_state(memory, memory_mask, init_hidden_state, aux_input, transition_mask)
         # shape: (batch_size, decoder_input_dim)
         start_embedding = self._start_embedding.expand(batch_size, self.decoder_input_dim)
+        '''
         if self.training:
             # shape (all_predictions): (batch_size, num_decoding_steps)
             # shape (seq_logprobs): (batch_size,)
@@ -485,7 +543,18 @@ class PointerNetDecoder(torch.nn.Module):
             # shape (seq_logprobs): (batch_size, beam_size)
             all_predictions, seq_logprobs = self._eval_decoding_helper.search(
                     start_embedding, start_state, self._decoder_step)
-        return all_predictions, seq_logprobs
+        '''
+        if self.training:
+            helper = self._train_decoding_helper
+        else:
+            helper = self._eval_decoding_helper
+        # shape (all_predictions): (batch_size, num_decoding_steps)
+        # shape (all_logprobs): (batch_size, num_decoding_steps)
+        # shape (seq_logprobs): (batch_size,)
+        # shape (final_hidden): (batch_size, decoder_output_dim)
+        all_predictions, all_logprobs, seq_logprobs, final_hidden = helper.search(
+                start_embedding, start_state, self._decoder_step)
+        return all_predictions, all_logprobs, seq_logprobs, final_hidden
 
     def _init_decoder_state(self,
                             memory: torch.Tensor,
@@ -503,10 +572,14 @@ class PointerNetDecoder(torch.nn.Module):
         # shape: (batch_size, 1+memory_len, encoder_output_dim)
         prepend = self._end_embedding.expand(batch_size, self.encoder_output_dim).unsqueeze(1)
         memory = torch.cat([prepend, memory], dim=1)
-        # The memory mask also need to be prepended with ones
+        # The memory mask also need to be prepended
+        # If ``predict_eos`` prepend ones, else zeros
         # shape: (batch_size, 1)
         # shape: (batch_size, 1+memory_len)
-        mask_prepend = memory_mask.new_ones((batch_size, 1))
+        if self._predict_eos:
+            mask_prepend = memory_mask.new_ones((batch_size, 1))
+        else:
+            mask_prepend = memory_mask.new_zeros((batch_size, 1))
         memory_mask = torch.cat([mask_prepend, memory_mask], dim=1)
 
         # Initialize the decoder hidden state with zeros if not provided.
@@ -514,25 +587,24 @@ class PointerNetDecoder(torch.nn.Module):
         if init_hidden_state is None:
             init_hidden_state = memory.new_zeros(batch_size, self.decoder_output_dim)
 
-        # Initialize the decoder context with zeros.
-        # shape: (batch_size, decoder_output_dim)
-        init_context = memory.new_zeros(batch_size, self.decoder_output_dim)
-
         state = {"memory":      memory,
                  "memory_mask": memory_mask,
-                 "cell_hidden": init_hidden_state,
-                 "cell_context":init_context}
+                 "cell_hidden": init_hidden_state}
+
+        if self._cell == 'lstm':
+            # Initialize the decoder context with zeros. Only do it when the cell type is ``LSTMCell``
+            # shape: (batch_size, decoder_output_dim)
+            init_context = memory.new_zeros(batch_size, self.decoder_output_dim)
+            state["cell_context"] = init_context
+
         if not aux_input is None:
             state['aux_input'] = aux_input
+
         # If transition mask is provided, we also need to prepend ones on the row and column axis
         # to account for the eos.
         if not transition_mask is None:
-            # shape: (batch_size, memory_len, 1+memory_len)
-            mask_prepend = transition_mask.new_ones((batch_size, memory_len, 1))
-            transition_mask = torch.cat([mask_prepend, transition_mask], dim=2)
             # shape: (batch_size, 1+memory_len, 1+memory_len)
-            mask_prepend = transition_mask.new_ones((batch_size, 1, 1+memory_len))
-            transition_mask = torch.cat([mask_prepend, transition_mask], dim=1)
+            transition_mask = F.pad(transition_mask, (1, 0, 1, 0), 'constant', int(self._predict_eos))
             state['transition_mask'] = transition_mask
 
         return state
@@ -560,6 +632,8 @@ class PointerNetDecoder(torch.nn.Module):
             # and apply on the memory mask.
             # shape: (group_size, memory_len)
             if not state.get("transition_mask", None) is None:
+                # shape: (group_size, 1, memory_len)
+                expand_last_predictions = last_predictions[:, None, None].expand(group_size, 1, memory_len)
                 transition_mask = torch.gather(state["transition_mask"], 1, expand_last_predictions).squeeze(1)
                 memory_mask = memory_mask * transition_mask.float()
         else:
@@ -580,10 +654,37 @@ class PointerNetDecoder(torch.nn.Module):
         # shape: (group_size, decoder_input_dim)
         projected_decoder_input = self._input_projection_layer(decoder_input)
 
-        # shape: (group_size, decoder_output_dim), (group_size, decoder_output_dim)
-        state["cell_hidden"], state["cell_context"] = self._decoder_cell(
-                projected_decoder_input,
-                (state["cell_hidden"], state["cell_context"]))
+        if self._cell == 'lstm':
+            # shape: (group_size, decoder_output_dim), (group_size, decoder_output_dim)
+            next_cell_hidden, next_cell_context = self._decoder_cell(
+                    projected_decoder_input,
+                    (state["cell_hidden"], state["cell_context"]))
+        elif self._cell == 'gru':
+            # shape: (group_size, decoder_output_dim)
+            next_cell_hidden = self._decoder_cell(
+                    projected_decoder_input,
+                    state["cell_hidden"])
+        if not last_predictions is None:
+            # Here we are finding any sequences where we predicted the end token in
+            # the previous timestep and directly passing through its hidden state.
+            # shape: (group_size, decoder_output_dim)
+            expand_last_predictions = last_predictions.unsqueeze(-1).expand(
+                    group_size,
+                    self.decoder_output_dim
+            )
+            # shape: (group_size, decoder_output_dim)
+            state["cell_hidden"] = torch.where(
+                    expand_last_predictions == self._eos_idx,
+                    state["cell_hidden"],
+                    next_cell_hidden
+            )
+            if self._cell == 'lstm':
+                # shape: (group_size, decoder_output_dim)
+                state["cell_context"] = torch.where(
+                        expand_last_predictions == self._eos_idx,
+                        state["cell_context"],
+                        next_cell_context
+                )
 
         # Compute the alignments scores w.r.t the encoder outputs
         # shape: (group_size, 1, decoder_output_dim)
