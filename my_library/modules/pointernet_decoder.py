@@ -1,6 +1,7 @@
 from typing import Dict, Tuple, List, Any, Union, Callable
 import warnings
 
+import math
 import numpy
 from overrides import overrides
 import torch
@@ -47,7 +48,8 @@ class DecodeHelper_:
     def search(self,
                start_embedding: torch.Tensor,
                start_state: StateType,
-               step: StepFunctionType) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+               step: StepFunctionType,
+               labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Given a starting state and a step function, apply greedy search to find the
         target sequences.
@@ -85,6 +87,109 @@ class DecodeHelper_:
         raise NotImplementedError
 
 
+class TeacherForcingHelper(DecodeHelper_):
+    def _sample(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        """ Since we got labels, we also return the log probs of the labels
+        """
+        # shape(labels): (batch_size,)
+        preds_logprobs, preds = torch.max(logits, dim=1)
+        return preds_logprobs, preds, torch.gather(logits, 1, labels[:, None]).squeeze(1)
+
+    def search(self,
+               start_embedding: torch.Tensor,
+               start_state: StateType,
+               step: StepFunctionType,
+               labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        batch_size = start_embedding.size()[0]
+        labels = labels.long()
+
+        # List of (batch_size,) tensors. One for each time step. Does not
+        # include the start symbols, which are implicit.
+        predictions: List[torch.Tensor] = []
+
+        # List of (batch_size,) tensors. One for each time step. The log
+        # probability corresponding to the true labels.
+        label_logprobs: List[torch.Tensor] = []
+
+	# Calculate the first timestep. This is done outside the main loop
+        # so that we can do some initialization for the loop.
+        # shape: (batch_size, num_classes)
+        state, start_class_log_probabilities = step(start_state, None, start_embedding)
+
+        num_classes = start_class_log_probabilities.size()[1]
+
+        # shape: (batch_size,), (batch_size,), (batch_size,)
+        start_log_probabilities, \
+        start_predicted_classes, \
+        label_start_log_probabilities = self._sample(start_class_log_probabilities, labels[:, 0])
+
+        # The log probabilities for the last time step. Here we use the logprob of predicting labels
+        # shape: (batch_size,)
+        label_last_log_probabilities = label_start_log_probabilities
+
+        # shape: [(batch_size,)]
+        predictions.append(start_predicted_classes)
+        label_logprobs.append(label_start_log_probabilities)
+
+        # Log probability tensor that mandates that the end token is selected.
+        # shape: (batch_size, num_classes)
+        log_probs_after_end = start_class_log_probabilities.new_full(
+                (batch_size, num_classes),
+                float("-inf")
+        )
+        log_probs_after_end[:, self._eos_idx] = 0.
+
+        for timestep in range(labels.size(1) - 1):
+            # shape: (batch_size,)
+            labels_tm1 = labels[:, timestep]
+
+            # Take a step. This get the predicted log probs of the next classes
+            # and updates the state.
+            # shape: (batch_size, num_classes)
+            state, class_log_probabilities = step(state, labels_tm1, None)
+
+            # shape: (batch_size, num_classes)
+            labels_tm1_expanded = labels_tm1.unsqueeze(-1).expand(
+                    batch_size,
+                    num_classes
+            )
+
+            # Here we are finding any sequences that alreadly end in
+            # the previous timestep and replacing the distribution with a
+            # one-hot distribution to let the log_probabilities fall through.
+            # shape: (batch_size, num_classes)
+            cleaned_log_probabilities = torch.where(
+                    labels_tm1_expanded == self._eos_idx,
+                    log_probs_after_end,
+                    class_log_probabilities
+            )
+
+            # Find the logprbs w.r.t the labels for this timestep.
+            # shape: (batch_size,), (batch_size,), (batch_size,)
+            log_probabilities, \
+            predicted_classes, \
+            label_log_probabilities = self._sample(cleaned_log_probabilities, labels[:, timestep+1])
+
+            predictions.append(predicted_classes)
+            label_logprobs.append(label_log_probabilities)
+
+            # shape: (batch_size, num_classes)
+            label_last_log_probabilities = label_last_log_probabilities + label_log_probabilities
+
+        if not torch.isfinite(label_last_log_probabilities).all():
+            warnings.warn("Infinite log probabilities encountered. Some final sequences may not make sense. "
+                          "This can happen when the beam size is larger than the number of valid (non-zero "
+                          "probability) transitions that the step function produces.",
+                          RuntimeWarning)
+
+        # shape: (batch_size, max_steps)
+        all_predictions = torch.stack(predictions, dim=1)
+        all_label_logprobs = torch.stack(label_logprobs, dim=1)
+        assert torch.allclose(torch.sum(all_label_logprobs, dim=-1), label_last_log_probabilities)
+
+        return all_predictions, all_label_logprobs, label_last_log_probabilities, state["cell_hidden"]
+
+
 class GreedyHelper(DecodeHelper_):
     def _sample(self, logits: torch.Tensor) -> torch.Tensor:
         return torch.max(logits, dim=1)
@@ -92,7 +197,8 @@ class GreedyHelper(DecodeHelper_):
     def search(self,
                start_embedding: torch.Tensor,
                start_state: StateType,
-               step: StepFunctionType) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+               step: StepFunctionType,
+               labels: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         batch_size = start_embedding.size()[0]
 
         # List of (batch_size,) tensors. One for each time step. Does not
@@ -220,10 +326,34 @@ class BeamSearchHelper(DecodeHelper_):
         """
         return logits.topk(self.beam_size)
 
+    def _sample_t0(self, logits: torch.Tensor) -> torch.Tensor:
+        """
+        The logits here will possibly have shape ``(batch_size, beam_size*class_nums)``
+        """
+        batch_size, bxc = logits.size()
+        if bxc >= self.beam_size:
+            return self._sample(logits)
+        else:
+            # need to take into account the case when the number of sentences is less then beam size QQ
+            # this will only happens at the firt time step, since once it is considered at t = 0, then
+            # all the following logits will have beam_size*class_nums (>= beam_size) in dim 1
+            # shape: (batch_size, bxc)
+            expand_times = math.ceil(self.beam_size / bxc)
+            top_logits, top_idxs = logits.topk(bxc)
+            # shape: (batch_size, beam_size)
+            top_logits = top_logits[:, :, None].\
+                    expand(batch_size, bxc, expand_times).\
+                    reshape(batch_size, bxc*expand_times)[:, :self.beam_size]
+            top_idxs = top_idxs[:, :, None].\
+                    expand(batch_size, bxc, expand_times).\
+                    reshape(batch_size, bxc*expand_times)[:, :self.beam_size]
+            return top_logits, top_idxs
+
     def search(self,
                start_embedding: torch.Tensor,
                start_state: StateType,
-               step: StepFunctionType) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+               step: StepFunctionType,
+               labels: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Notes
             The ``batch_size`` in the input and output of the step function 
@@ -257,15 +387,18 @@ class BeamSearchHelper(DecodeHelper_):
         num_classes = start_class_log_probabilities.size()[1]
 
         # shape: (batch_size, beam_size), (batch_size, beam_size)
-        start_top_log_probabilities, start_predicted_classes = self._sample(start_class_log_probabilities)
+        start_top_log_probabilities, start_predicted_classes = self._sample_t0(start_class_log_probabilities)
         if self.beam_size == 1 and (start_predicted_classes == self._eos_idx).all():
             warnings.warn("Empty sequences predicted. You may want to increase the beam size or ensure "
                           "your step function is working properly.",
                           RuntimeWarning)
-            return start_predicted_classes.unsqueeze(-1)[:, 0, :], \
-                   start_top_log_probabilities.unsqueeze(-1)[:, 0, :], \
-                   start_top_log_probabilities[:, 0], \
-                   state["cell_hidden"]
+            return start_predicted_classes.unsqueeze(-1), \
+                   start_top_log_probabilities.unsqueeze(-1), \
+                   start_top_log_probabilities, \
+                   state["cell_hidden"].\
+                        unsqueeze(1).\
+                        expand(batch_size, self.beam_size, state["cell_hidden"].size(1)).\
+                        reshape(batch_size * self.beam_size, state["cell_hidden"].size(1))
 
         # The log probabilities for the last time step.
         # shape: (batch_size, beam_size)
@@ -409,11 +542,7 @@ class BeamSearchHelper(DecodeHelper_):
         assert (all_predictions == state['hist_predictions'].view(batch_size, self.beam_size, -1)).all()
         assert torch.allclose(torch.sum(all_logprobs, dim=-1), last_log_probabilities)
 
-        # Keep the beam with highest score
-        all_predictions = all_predictions[:, 0, :]
-        all_logprobs = all_logprobs[:, 0, :]
-        last_log_probabilities = last_log_probabilities[:, 0]
-        final_hidden = state["cell_hidden"].reshape(batch_size, self.beam_size, -1)[:, 0, :]
+        final_hidden = state["cell_hidden"].reshape(batch_size, self.beam_size, -1)
 
         return all_predictions, all_logprobs, last_log_probabilities, final_hidden
 
@@ -483,7 +612,10 @@ class PointerNetDecoder(torch.nn.Module):
         self._predict_eos = predict_eos
 
         def get_helper(helper_type):
-            if helper_type == 'sample':
+            if helper_type == 'teacher_forcing':
+                return TeacherForcingHelper(eos_idx=self._eos_idx,
+                                            max_steps=max_decoding_steps)
+            elif helper_type == 'sample':
                 return SamplingHelper(eos_idx=self._eos_idx,
                                       max_steps=max_decoding_steps)
             elif helper_type == 'greedy':
@@ -496,8 +628,10 @@ class PointerNetDecoder(torch.nn.Module):
             else:
                 raise ValueError("Unsupported Decoding Helper!")
         # Training decoding helper
+        self._train_helper_type = train_helper
         self._train_decoding_helper = get_helper(train_helper)
         # At prediction time, we'll use a beam search to find the best target sequence.
+        self._eval_helper_type = val_helper
         self._eval_decoding_helper = get_helper(val_helper)
 
     @overrides
@@ -506,7 +640,8 @@ class PointerNetDecoder(torch.nn.Module):
                 memory_mask: torch.Tensor,
                 init_hidden_state: torch.Tensor = None,
                 aux_input: torch.Tensor = None,
-                transition_mask: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                transition_mask: torch.Tensor = None,
+                labels: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # pylint: disable=arguments-differ
         """
         Make foward pass with decoder logic for producing the entire target sequence.
@@ -524,6 +659,8 @@ class PointerNetDecoder(torch.nn.Module):
             Shape: ``[batch_size, aux_input_dim]``.
         transition_mask : ``torch.FloatTensor``, optional
             The mask for restricting the action space. Shape: ``[batch_size, memory_len, memory_len]``
+        labels : ``torch.IntTensor``, optional
+            The true labels for teacher forcing. Shape: ``[batch_size, decoding_len]``
         Returns
         -------
         Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
@@ -532,28 +669,22 @@ class PointerNetDecoder(torch.nn.Module):
         start_state = self._init_decoder_state(memory, memory_mask, init_hidden_state, aux_input, transition_mask)
         # shape: (batch_size, decoder_input_dim)
         start_embedding = self._start_embedding.expand(batch_size, self.decoder_input_dim)
-        '''
-        if self.training:
-            # shape (all_predictions): (batch_size, num_decoding_steps)
-            # shape (seq_logprobs): (batch_size,)
-            all_predictions, seq_logprobs = self._train_decoding_helper.search(
-                    start_embedding, start_state, self._decoder_step)
-        else:
-            # shape (all_predictions): (batch_size, beam_size, num_decoding_steps)
-            # shape (seq_logprobs): (batch_size, beam_size)
-            all_predictions, seq_logprobs = self._eval_decoding_helper.search(
-                    start_embedding, start_state, self._decoder_step)
-        '''
         if self.training:
             helper = self._train_decoding_helper
         else:
             helper = self._eval_decoding_helper
-        # shape (all_predictions): (batch_size, num_decoding_steps)
-        # shape (all_logprobs): (batch_size, num_decoding_steps)
-        # shape (seq_logprobs): (batch_size,)
-        # shape (final_hidden): (batch_size, decoder_output_dim)
+        # shape (all_predictions): (batch_size, K, num_decoding_steps)
+        # shape (all_logprobs): (batch_size, K, num_decoding_steps)
+        # shape (seq_logprobs): (batch_size, K)
+        # shape (final_hidden): (batch_size, K, decoder_output_dim)
         all_predictions, all_logprobs, seq_logprobs, final_hidden = helper.search(
-                start_embedding, start_state, self._decoder_step)
+                start_embedding, start_state, self._decoder_step, labels)
+        # add a extra beam dimension if needed
+        if all_predictions.dim() == 2:
+            all_predictions = all_predictions.unsqueeze(1)
+            all_logprobs = all_logprobs.unsqueeze(1)
+            seq_logprobs = seq_logprobs.unsqueeze(1)
+            final_hidden = final_hidden.unsqueeze(1)
         return all_predictions, all_logprobs, seq_logprobs, final_hidden
 
     def _init_decoder_state(self,
