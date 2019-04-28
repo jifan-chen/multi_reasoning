@@ -61,11 +61,14 @@ def Evd_Reward(per_step_included, per_step_mask, eos_mask, evd_rclls, evd_f1s,
 
 def get_evd_prediction_mask(all_predictions, eos_idx):
     # get the mask w.r.t to ``all_predictions`` that includes the index of the first eos and those before it
+    # shape(all_predictions): (batch_size, ..., num_steps)
     # Shape: (batch_size,)
-    batch_size, num_steps = all_predictions.size()
-    valid_decoding_lens = torch.sum((all_predictions != eos_idx).float(), dim=1) + 1
+    batch_size = all_predictions.size(0)
+    num_steps = all_predictions.size(-1)
+    # shape: (batch_size, ...)
+    valid_decoding_lens = torch.sum((all_predictions != eos_idx).float(), dim=-1) + 1
     indices = get_range_vector(num_steps, get_device_of(all_predictions)).float()
-    mask = (indices.view(1, num_steps) < valid_decoding_lens.view(batch_size, 1)).int()
+    mask = (indices.view(*([1]*(all_predictions.dim()-1)), num_steps) < valid_decoding_lens.unsqueeze(-1)).int()
     eos_mask = (all_predictions == eos_idx).int() * mask
     return mask, eos_mask
 
@@ -84,23 +87,31 @@ class PerStepInclusion(Metric):
     def __call__(self,
                  all_predictions: torch.Tensor,
                  sent_labels: torch.Tensor,
-                 sent_mask: Optional[torch.Tensor] = None):
+                 sent_mask: Optional[torch.Tensor] = None,
+                 instance_mask: Optional[torch.Tensor] = None):
         """
         Parameters
         ----------
         all_predictions : ``torch.Tensor``, required.
-            A tensor of predictions of shape (batch_size, num_decoding_steps). The prediction could
+            A tensor of predictions of shape (batch_size, K, num_decoding_steps). The prediction could
             equal to ``eos_idx``
         sent_labels : ``torch.Tensor``, required.
             A tensor of one-hot label of shape (batch_size, num_sents) that specifies which sentences
             are marked as evidences.
         sent_mask: ``torch.Tensor``, optional (default = None).
             A masking tensor the same size as ``sent_labels``.
+        instance_mask: ``torch.Tensor``, optional (default = None).
+            A masking tensor of shape (batch_size,).
         """
-        all_predictions, sent_labels, sent_mask = self.unwrap_to_tensors(all_predictions, sent_labels, sent_mask)
+        all_predictions, sent_labels, sent_mask, instance_mask = self.unwrap_to_tensors(all_predictions,
+                                                                                        sent_labels,
+                                                                                        sent_mask,
+                                                                                        instance_mask)
         
+        if instance_mask is None:
+            instance_mask = sent_labels.new_ones((sent_labels.size(0),)).float()
         if sent_mask is None:
-            sent_mask = torch.ones_like(sent_labels)
+            sent_mask = torch.ones_like(sent_labels).float()
         sent_mask = sent_mask.float()
         sent_labels = sent_labels.float()
         all_predictions = all_predictions.float()
@@ -114,27 +125,36 @@ class PerStepInclusion(Metric):
         sent_mask = F.pad(sent_mask, (1, 0), 'constant', 1)
 
         batch_size, num_sents = sent_labels.size()
-        num_steps = all_predictions.size(1)
+        num_steps = all_predictions.size(2)
         # Transform the predicted sent indices to one-hot vector in the same form with sent_labels
         indices = get_range_vector(num_sents, get_device_of(sent_labels)).float()
-        # shaps: (batch_size, num_steps, num_sents)
-        preds_onehot = (all_predictions.view(batch_size, num_steps, 1) == indices.view(1, 1, num_sents)).float()
+        # shaps: (batch_size, K, num_steps, num_sents)
+        K_preds_onehot = (all_predictions.unsqueeze(-1) == indices.view(1, 1, 1, num_sents)).float()
 
         # Check whether each predicted evidence is either one of the gold evidence or the end symbol
         # The values in ``per_step_included`` should all be 0 or 1 since each vector in ``preds_onehot``
         # is one-hot, and at the position where ``sent_labels`` is -1, the value of ``pred_onehot`` should be 0
-        # Shape: (batch_size, num_steps)
-        per_step_included = torch.sum(preds_onehot * sent_labels.view(batch_size, 1, num_sents), dim=2)
+        # Shape: (batch_size, K, num_steps)
+        K_per_step_included = torch.sum(K_preds_onehot * sent_labels.view(batch_size, 1, 1, num_sents), dim=3)
+
+        K_per_step_mask, K_eos_mask = get_evd_prediction_mask(all_predictions, self._eos_idx)
+        K_per_step_mask = K_per_step_mask.float()
+        K_eos_mask = K_eos_mask.float()
+
+        # get the prediction with max true positive
+        # Shape: (batch_size, K)
+        K_TP = torch.sum(K_per_step_included * K_per_step_mask, dim=2)
+        K_num = torch.sum(K_per_step_mask, dim=2)
+        # Shape: (batch_size,)
+        max_K_TP, max_idxs = torch.max(K_TP, dim=1)
+        max_K_num = K_num[get_range_vector(batch_size, get_device_of(sent_labels)), max_idxs]
 
         # record the number of predictions, and the number of correct predictions,
         # which is actually the precision
-        per_step_mask, eos_mask = get_evd_prediction_mask(all_predictions, self._eos_idx)
-        per_step_mask = per_step_mask.float()
-        eos_mask = eos_mask.float()
-        self._tot_predictions += torch.sum(per_step_mask)
-        self._acc_predictions += torch.sum(per_step_included * per_step_mask)
+        self._acc_predictions += torch.sum(max_K_TP * instance_mask)
+        self._tot_predictions += torch.sum(max_K_num * instance_mask)
         
-        return per_step_included, per_step_mask, eos_mask
+        return K_per_step_included, K_per_step_mask, K_eos_mask
 
     def get_metric(self, reset: bool = False):
         """
