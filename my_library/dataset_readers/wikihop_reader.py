@@ -28,7 +28,6 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
                                         sent_labels: List[int] = None,
                                         answer_texts: List[str] = None,
                                         passage_offsets: List[Tuple] = None,
-                                        passage_dep_heads: List[Tuple[int, int]] = None,
                                         coref_clusters: List[List[List[int]]] = None,
                                         evd_possible_chains: List[List[int]] = None,
                                         ans_sent_idxs: List[int] = None,
@@ -65,8 +64,6 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
         exactly one answer per question, but the dev and test sets have several.  TriviaQA has many
         possible answers, which are the aliases for the known correct entity.  This is put into the
         metadata for use with official evaluation scripts, but not used anywhere else.
-    passage_dep_heads : ``List[int]``, optional
-        The dependency parents for each token in the passage, zero-indexing.
     additional_metadata : ``Dict[str, Any]``, optional
         The constructed ``metadata`` field will by default contain ``original_passage``,
         ``token_offsets``, ``question_tokens``, ``passage_tokens``, and ``answer_texts`` keys.  If
@@ -201,8 +198,8 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
     return Instance(fields)
 
 
-@DatasetReader.register("hotpot_reader")
-class HotpotDatasetReader(DatasetReader):
+@DatasetReader.register("wikihop_reader")
+class WikihopDatasetReader(DatasetReader):
     """
     Reads a JSON-formatted SQuAD file and returns a ``Dataset`` where the ``Instances`` have four
     fields: ``question``, a ``TextField``, ``passage``, another ``TextField``, and ``span_start``
@@ -258,8 +255,7 @@ class HotpotDatasetReader(DatasetReader):
 
     def process_raw_instance(self, article):
         article_id = article['_id']
-        paragraphs = article['context']
-        dependency_paragraphs = article['golden_head']
+        paragraphs = article['passage']
         coref_clusters = article.get(self.coref_key, None)
         if self.chain == 'rb':
             evd_possible_chains = article.get("possible_chain", None)
@@ -274,45 +270,26 @@ class HotpotDatasetReader(DatasetReader):
         sent_starts = []
         sent_ends = []
         sent_labels = []
-        sp_set = set(list(map(tuple, article['supporting_facts'])))
-        passage_dep_heads = []
         ans_sent_idxs = []
 
-        for para, dep_para in zip(paragraphs, dependency_paragraphs):
-            cur_title, cur_para = para[0], para[1]
-            dep_title, cur_dep_para = dep_para[0], dep_para[1]
-            assert cur_title == dep_title, "Not equal: %s, %s" % (cur_title, dep_title)
-            for sent_id, (sent, dep_heads) in enumerate(zip(cur_para, cur_dep_para)):
-                '''
-                # heads are 1-indexing, so shifted by 1 and add the sentence offset
-                dep_heads_tmp = []
-                for idx, h in enumerate(dep_heads):
-                    if 0 <= h - 1 + len(passage_tokens) < self._para_limit and idx + len(
-                            passage_tokens) < self._para_limit and 0 <= h - 1:
-                        # print(idx, h)
-                        dep_heads_tmp.append((idx + len(passage_tokens), h - 1 + len(passage_tokens)))
-                    elif h <= 0 and idx + len(passage_tokens) < self._para_limit:
-                        dep_heads_tmp.append((idx + len(passage_tokens), idx + len(passage_tokens)))
-
-                passage_dep_heads.extend(dep_heads_tmp)
-                '''
-
+        for para in paragraphs:
+            for sent_id, sent in enumerate(para):
                 tokenized_sent = self._tokenizer.tokenize(sent)
                 tokenized_sent = [Token(text=tk.text, idx=tk.idx) for tk in tokenized_sent]
                 sent_offset = [(tk.idx + len(concat_article),
                                 tk.idx + len(tk.text) + len(concat_article)) for tk in tokenized_sent]
                 if sent_offset:
-                    sent_start = sent_offset[0][0]
-                    sent_end = sent_offset[-1][1]
-                    sent_starts.append(sent_start)
-                    sent_ends.append(sent_end)
-                    if (cur_title, sent_id) in sp_set:
-                        if answer_text in sent:
-                            ans_sent_idxs.append(len(sent_labels))
+                    if answer_text in sent.lower():
+                        ans_sent_idxs.append(len(sent_labels))
+                    if len(sent_labels) in evd_possible_chains[0]:
                         supporting_facts.append(sent)
                         sent_labels.append(1)
                     else:
                         sent_labels.append(0)
+                    sent_start = sent_offset[0][0]
+                    sent_end = sent_offset[-1][1]
+                    sent_starts.append(sent_start)
+                    sent_ends.append(sent_end)
                 passage_offsets.extend(sent_offset)
                 concat_article += sent
                 passage_tokens.extend(tokenized_sent)
@@ -338,7 +315,6 @@ class HotpotDatasetReader(DatasetReader):
                 [answer_text],
                 passage_tokens,
                 passage_offsets,
-                passage_dep_heads,
                 coref_clusters,
                 evd_possible_chains,
                 ans_sent_idxs,
@@ -380,7 +356,6 @@ class HotpotDatasetReader(DatasetReader):
                          answer_texts: List[str] = None,
                          passage_tokens: List[Token] = None,
                          passage_offsets: List[Tuple] = None,
-                         passage_dep_heads: List[Tuple[int, int]] = None,
                          coref_clusters: List[List[List[int]]] = None,
                          evd_possible_chains: List[List[int]] = None,
                          ans_sent_idxs: List[int] = None,
@@ -435,7 +410,6 @@ class HotpotDatasetReader(DatasetReader):
                                                    sent_labels,
                                                    answer_texts,
                                                    passage_offsets,
-                                                   passage_dep_heads,
                                                    coref_clusters,
                                                    evd_possible_chains,
                                                    ans_sent_idxs,
@@ -444,5 +418,5 @@ class HotpotDatasetReader(DatasetReader):
 
 
 if __name__ == '__main__':
-    reader = HotpotDatasetReader()
-    reader.read("/backup2/jfchen/data/hotpot/hotpot_test.json")
+    reader = WikihopDatasetReader()
+    reader.read("/scratch/cluster/jfchen/jfchen/data/wikihop/train_chain/train0.json")
