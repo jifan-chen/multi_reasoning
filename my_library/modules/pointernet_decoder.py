@@ -304,9 +304,9 @@ class GreedyHelper(DecodeHelper_):
 
 
 class SamplingHelper(GreedyHelper):
-    def _sample(self, logits: torch.Tensor) -> torch.Tensor:
+    def _sample(self, logits: torch.Tensor, temp=0.5) -> torch.Tensor:
         # shape: (batch_size, 1)
-        samples = torch.multinomial(torch.exp(logits), 1)
+        samples = torch.multinomial(torch.exp(logits / temp), 1)
         #print("sample:", samples)
         # shape: (batch_size, 1)
         logprobs = torch.gather(logits, 1, samples)

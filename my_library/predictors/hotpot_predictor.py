@@ -22,7 +22,12 @@ def order2chain(order):
     if not all([i >= 0 for i in chain]):
         print("order:", order)
         print("chain:", chain)
-        exit()
+        #exit()
+        pos = None
+        for i, c in enumerate(chain):
+            if c < 0:
+                pos = i
+        chain = chain[:pos]
     return chain
 
 
@@ -30,6 +35,7 @@ def order2chain(order):
 class HotpotPredictor(Predictor):
     @overrides
     def _json_to_instance(self, hotpot_dict_instance: JsonDict) -> Instance:
+        print(type(hotpot_dict_instance), len(hotpot_dict_instance))
         if type(self._dataset_reader) == MultiprocessDatasetReader:
             processed_instance = self._dataset_reader.reader.process_raw_instance(hotpot_dict_instance)
         else:
@@ -41,7 +47,18 @@ class HotpotPredictor(Predictor):
         pred_sent_orders = output.get('pred_sent_orders', None)
         if not pred_sent_orders is None:
             pred_chains = [order2chain(order) for order in pred_sent_orders]
-        return {'best_span': output['best_span'],
+        else:
+            # get pred evdiences from sentences with top k ``gate_prob``
+            '''
+            pred_sent_labels = output['pred_sent_labels'][:num_sents] # maybe just from gate? (prob >= th)
+            pred_chains = [[s_idx for s_idx in range(num_sents) if pred_sent_labels[s_idx] == 1]]
+            '''
+            num_sents = len(output['sent_labels'])
+            gate_probs = output['gate_probs'][:num_sents]
+            pred_chains = [[i] for i in sorted(range(num_sents), key=lambda x: gate_probs[x], reverse=True)[:10]]
+        return {'answer_texts': output['answer_texts'],
+                'best_span_str': output.get('best_span_str', None),
+                'best_span': output.get('best_span', None),
                 'pred_sent_labels': output.get('pred_sent_labels', None),
                 'pred_sent_orders': output.get('pred_sent_orders', None),
                 'pred_chains': pred_chains,

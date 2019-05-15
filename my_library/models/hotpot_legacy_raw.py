@@ -98,6 +98,7 @@ class BidirectionalAttentionFlow(Model):
                 span_end: torch.IntTensor = None,
                 sentence_spans: torch.IntTensor = None,
                 sent_labels: torch.IntTensor = None,
+                evd_chain_labels: torch.IntTensor = None,
                 q_type: torch.IntTensor = None,
                 sp_mask: torch.IntTensor = None,
                 # dep_mask: torch.IntTensor = None,

@@ -95,8 +95,8 @@ def get_coref_map(coref_clusters, seq_len, passage_tokens):
     return m
 
 
-@Predictor.register('demo_hotpot_predictor')
-class DemoHotpotPredictor(Predictor):
+@Predictor.register('wiki_demo_hotpot_predictor')
+class WikiDemoHotpotPredictor(Predictor):
     @overrides
     def __init__(self, model: Model, dataset_reader: DatasetReader) -> None:
         """
@@ -107,18 +107,22 @@ class DemoHotpotPredictor(Predictor):
             self._dataset_reader = dataset_reader.reader
         else:
             self._dataset_reader = dataset_reader
+        '''
         with open('/scratch/cluster/jfchen/jason/multihopQA/hotpot/test/test_10000_chain.json', 'r') as f:
             train = json.load(f)
-        with open('/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_chain.json', 'r') as f:
+        '''
+        with open('/scratch/cluster/jfchen/jason/multihopQA/wikihop/dev/dev_chain.json', 'r') as f:
             dev = json.load(f)
+        '''
         with open('/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_chain_easy.json', 'r') as f:
             dev_easy = json.load(f)
         with open('/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_chain_hard.json', 'r') as f:
             dev_hard = json.load(f)
-        self.demo_dataset = {'train': train,
-                             'dev': dev,
-                             'dev_easy': dev_easy,
-                             'dev_hard': dev_hard}
+        '''
+        #self.demo_dataset = {'train': train,
+        self.demo_dataset = {'dev': dev,}
+                             #'dev_easy': dev_easy,
+                             #'dev_hard': dev_hard}
 
     @overrides
     def _json_to_instance(self, hotpot_dict_instance: JsonDict) -> Instance:
@@ -197,6 +201,9 @@ class DemoHotpotPredictor(Predictor):
             pred_chains_em = [chain_EM(chain, evd_possible_chains) for chain in pred_chains]
             # now just take the first one to visualize
             #pred_sent_orders = pred_sent_orders[0]
+        print(coref_clusters)
+        print(type(coref_clusters))
+        coref_clusters = None
         print("fin:", time.time() - start_time)
         return {"doc":              passage_tokens,
                 "attns":            heads_doc_res,
@@ -218,7 +225,7 @@ class DemoHotpotPredictor(Predictor):
                 "topk_chain_em":    any(pred_chains_em) if not pred_sent_orders is None else None,
                 "sent_spans":       [list(sp) for sp in token_spans_sent],
                 "sent_labels":      sent_labels,
-                "coref_clusters":   {'coref clusters': {'document': passage_tokens, 'clusters': coref_clusters}},
+                "coref_clusters":   {'coref clusters': {'document': passage_tokens, 'clusters': coref_clusters}} if coref_clusters else None,
                 "ans_sent_idxs":     ans_sent_idxs}
 
     def _predict_json(self, inputs: JsonDict) -> JsonDict:

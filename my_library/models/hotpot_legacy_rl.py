@@ -15,7 +15,7 @@ from allennlp.training.metrics import F1Measure, SquadEmAndF1, Average
 from my_library.models.utils import convert_sequence_to_spans, convert_span_to_sequence
 from my_library.metrics import AttF1Measure, SquadEmAndF1_RT, PerStepInclusion, ChainAccuracy
 from my_library.metrics.per_step_inclusion import Evd_Reward, get_evd_prediction_mask
-from my_library.modules import PointerNetDecoder
+from my_library.modules import PointerNetDecoder, BiAttention
 
 
 @Model.register("hotpot_legacy_rl")
@@ -115,6 +115,8 @@ class RLBidirectionalAttentionFlow(Model):
                 coref_mask: torch.FloatTensor = None,
                 metadata: List[Dict[str, Any]] = None) -> Dict[str, torch.Tensor]:
 
+        # In this model, we only take the first chain in ``evd_chain_labels`` for supervision
+        evd_chain_labels = evd_chain_labels[:, 0]
         # there may be some instances that we can't find any evd chain for training
         # In that case, use the mask to ignore those instances
         evd_instance_mask = (evd_chain_labels[:, 0] != 0).float() if not evd_chain_labels is None else None
@@ -310,12 +312,12 @@ class RLBidirectionalAttentionFlow(Model):
                 output_dict['answer_texts'].append(answer_texts)
 
                 if answer_texts:
-                    em, f1 = self._squad_metrics(best_span_string, answer_texts)
+                    em, f1 = self._squad_metrics(best_span_string.lower(), answer_texts)
                     ems.append(em)
                     f1s.append(f1)
 
                 # shift sentence indice back
-                evd_possible_chains.append([s_idx-1 for s_idx in metadata[i]['evd_possible_chains'] if s_idx > 0])
+                evd_possible_chains.append([s_idx-1 for s_idx in metadata[i]['evd_possible_chains'][0] if s_idx > 0])
                 ans_sent_idxs.append([s_idx-1 for s_idx in metadata[i]['ans_sent_idxs']])
                 print("ans_sent_idxs:", metadata[i]['ans_sent_idxs'])
                 if len(metadata[i]['ans_sent_idxs']) > 0:
@@ -348,28 +350,28 @@ class RLBidirectionalAttentionFlow(Model):
 
         # Compute the loss for training.
         if span_start is not None:
-            try:
-                start_loss = nll_loss(util.masked_log_softmax(span_start_logits, None), span_start.squeeze(-1))
-                # self._span_start_accuracy(span_start_logits, span_start.squeeze(-1))
-                end_loss = nll_loss(util.masked_log_softmax(span_end_logits, None), span_end.squeeze(-1))
-                # self._span_end_accuracy(span_end_logits, span_end.squeeze(-1))
-                # self._span_accuracy(best_span, torch.stack([span_start, span_end], -1))
-                type_loss = nll_loss(util.masked_log_softmax(predict_type, None), q_type)
-                loss = start_loss + end_loss + type_loss + rl_loss
-                if self._strong_sup:
-                    loss += coref_sup_loss
-                    self._loss_trackers['coref_sup_loss'](coref_sup_loss)
-                #print('start_loss:{} end_loss:{} type_loss:{}'.format(start_loss,end_loss,type_loss))
-                self._loss_trackers['loss'](loss)
-                self._loss_trackers['start_loss'](start_loss)
-                self._loss_trackers['end_loss'](end_loss)
-                self._loss_trackers['type_loss'](type_loss)
-                self._loss_trackers['rl_loss'](rl_loss)
-                output_dict["loss"] = loss
+            #try:
+            start_loss = nll_loss(util.masked_log_softmax(span_start_logits, None), span_start.squeeze(-1))
+            # self._span_start_accuracy(span_start_logits, span_start.squeeze(-1))
+            end_loss = nll_loss(util.masked_log_softmax(span_end_logits, None), span_end.squeeze(-1))
+            # self._span_end_accuracy(span_end_logits, span_end.squeeze(-1))
+            # self._span_accuracy(best_span, torch.stack([span_start, span_end], -1))
+            type_loss = nll_loss(util.masked_log_softmax(predict_type, None), q_type)
+            loss = start_loss + end_loss + type_loss + rl_loss
+            if self._strong_sup:
+                loss += coref_sup_loss
+                self._loss_trackers['coref_sup_loss'](coref_sup_loss)
+            #print('start_loss:{} end_loss:{} type_loss:{}'.format(start_loss,end_loss,type_loss))
+            self._loss_trackers['loss'](loss)
+            self._loss_trackers['start_loss'](start_loss)
+            self._loss_trackers['end_loss'](end_loss)
+            self._loss_trackers['type_loss'](type_loss)
+            self._loss_trackers['rl_loss'](rl_loss)
+            output_dict["loss"] = loss
 
-            except RuntimeError:
-                print('\n meta_data:', metadata)
-                print(span_start_logits.shape)
+            #except RuntimeError:
+            #    print('\n meta_data:', metadata)
+            #    print(span_start_logits.shape)
 
         return output_dict
 
@@ -433,7 +435,7 @@ class SpanGate(Seq2SeqEncoder):
     def __init__(self, span_dim,
                        max_decoding_steps=5, predict_eos=True, cell='lstm',
                        train_helper="sample", val_helper="beamsearch", beam_size=3,
-                       aux_input_dim=None,
+                       aux_input_dim=None,#200,#None,
                        pass_label=False):
         super().__init__()
         self.evd_decoder = PointerNetDecoder(LinearMatrixAttention(span_dim, span_dim, "x,y,x*y"),
@@ -454,7 +456,8 @@ class SpanGate(Seq2SeqEncoder):
                 question_mask: torch.FloatTensor,
                 evd_chain_labels: torch.FloatTensor,
                 self_att_layer: Seq2SeqEncoder,
-                sent_encoder: Seq2SeqEncoder):
+                sent_encoder: Seq2SeqEncoder,
+                get_all_beam: bool=False):
 
         print("spans_tensor", spans_tensor.shape)
         batch_size, num_spans, max_batch_span_width = spans_mask.size()
@@ -496,7 +499,7 @@ class SpanGate(Seq2SeqEncoder):
         all_predictions, all_logprobs, seq_logprobs, final_hidden = self.evd_decoder(max_pooled_span_emb,
                                                                                      max_pooled_span_mask,
                                                                                      question_emb,
-                                                                                     aux_input=None,#question_emb,
+                                                                                     aux_input=None,#question_emb,#None
                                                                                      transition_mask=None,
                                                                                      labels=evd_chain_labels)
         if self._pass_label:
@@ -519,88 +522,43 @@ class SpanGate(Seq2SeqEncoder):
         orders = orders[:, :, 1:]
 
         # For beamsearch, get the top one. For other helpers, just like squeeze
-        all_predictions = all_predictions[:, 0, :]
-        all_logprobs = all_logprobs[:, 0, :]
-        seq_logprobs = seq_logprobs[:, 0]
-        final_hidden = final_hidden[:, 0, :]
+        if not get_all_beam:
+            all_predictions = all_predictions[:, 0, :]
+            all_logprobs = all_logprobs[:, 0, :]
+            seq_logprobs = seq_logprobs[:, 0]
+            final_hidden = final_hidden[:, 0, :]
 
         # build the gate. The dim is set to 1 + num_spans to account for the end embedding
-        # shape: (batch_size, 1+num_spans)
-        gate = spans_tensor.new_zeros((batch_size, 1+num_spans))
-        gate.scatter_(1, all_predictions, 1.)
+        # shape: (batch_size, 1+num_spans) or (batch_size, K, 1+num_spans)
+        if not get_all_beam:
+            gate = spans_tensor.new_zeros((batch_size, 1+num_spans))
+        else:
+            gate = spans_tensor.new_zeros((batch_size, beam, 1+num_spans))
+        gate.scatter_(-1, all_predictions, 1.)
         # remove the column for end embedding
-        # shape: (batch_size, num_spans)
-        gate = gate[:, 1:]
+        # shape: (batch_size, num_spans) or (batch_size, K, num_spans)
+        gate = gate[..., 1:]
         #print("gate:", gate)
         #print("real num:", torch.sum(gate, dim=1))
         #print("seq probs:", torch.exp(seq_logprobs))
 
-        # shape: (batch_size * num_spans, 1)
-        gate = gate.reshape(batch_size * num_spans, 1)
+        # shape: (batch_size * num_spans, 1) or (batch_size * K * num_spans, 1)
+        if not get_all_beam:
+            gate = gate.reshape(batch_size * num_spans, 1)
+        else:
+            gate = gate.reshape(batch_size * beam * num_spans, 1)
 
         # The probability of each selected sentence being selected. If not selected, set to 0.
-        # shape: (batch_size * num_spans, 1)
-        gate_probs = spans_tensor.new_zeros((batch_size, 1+num_spans))
-        gate_probs.scatter_(1, all_predictions, all_logprobs.exp())
-        gate_probs = gate_probs[:, 1:].reshape(batch_size * num_spans, 1)
+        # shape: (batch_size * num_spans, 1) or (batch_size * K * num_spans, 1)
+        if not get_all_beam:
+            gate_probs = spans_tensor.new_zeros((batch_size, 1+num_spans))
+        else:
+            gate_probs = spans_tensor.new_zeros((batch_size, beam, 1+num_spans))
+        gate_probs.scatter_(-1, all_predictions, all_logprobs.exp())
+        gate_probs = gate_probs[..., 1:]
+        if not get_all_beam:
+            gate_probs = gate_probs.reshape(batch_size * num_spans, 1)
+        else:
+            gate_probs = gate_probs.reshape(batch_size * beam * num_spans, 1)
 
         return all_predictions, all_logprobs, seq_logprobs, gate, gate_probs, max_pooled_span_mask, att_score, orders
-
-
-class LockedDropout(nn.Module):
-    def __init__(self, dropout):
-        super().__init__()
-        self.dropout = dropout
-
-    def forward(self, x):
-        dropout = self.dropout
-        if not self.training:
-            return x
-        m = x.data.new(x.size(0), 1, x.size(2)).bernoulli_(1 - dropout)
-        mask = Variable(m.div_(1 - dropout), requires_grad=False)
-        mask = mask.expand_as(x)
-        return mask * x
-
-
-@Seq2SeqEncoder.register("bi_attention")
-class BiAttention(Seq2SeqEncoder):
-    def __init__(self, input_size, dropout, output_projection_dim=None):
-        super().__init__()
-        self.dropout = LockedDropout(dropout)
-        self._output_dim = output_projection_dim or input_size
-        self.input_linear = nn.Linear(input_size, 1, bias=False)
-        self.memory_linear = nn.Linear(input_size, 1, bias=False)
-        self.output_linear = nn.Sequential(
-                nn.Linear(input_size * 4, self._output_dim),
-                nn.ReLU()
-            )
-
-        self.dot_scale = nn.Parameter(torch.Tensor(input_size).uniform_(1.0 / (input_size ** 0.5)))
-
-    def forward(self, input, memory=None, mask=None, mask_sp=None):
-        if memory is None:
-            memory = input
-        bsz, input_len, memory_len = input.size(0), input.size(1), memory.size(1)
-
-        input = self.dropout(input)
-        memory = self.dropout(memory)
-
-        input_dot = self.input_linear(input)
-        memory_dot = self.memory_linear(memory).view(bsz, 1, memory_len)
-        cross_dot = torch.bmm(input * self.dot_scale, memory.permute(0, 2, 1).contiguous())
-        att = input_dot + memory_dot + cross_dot
-        att = att - 1e30 * (1 - mask[:, None])
-
-        weight_one = F.softmax(att, dim=-1)
-        output_one = torch.bmm(weight_one, memory)
-        weight_two = F.softmax(att.max(dim=-1)[0], dim=-1).view(bsz, 1, input_len)
-        output_two = torch.bmm(weight_two, input)
-
-        if not mask_sp is None:
-            # print(att.shape, mask_sp.shape)
-            loss = torch.mean(-torch.log(torch.sum(weight_one * mask_sp.unsqueeze(1), dim=-1) + 1e-30))
-        else:
-            loss = None
-        outputs = torch.cat([input, output_one, input*output_one, output_two*output_one], dim=-1)
-        outputs = self.output_linear(outputs)
-        return outputs, loss, weight_one
