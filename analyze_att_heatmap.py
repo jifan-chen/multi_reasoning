@@ -150,9 +150,13 @@ def get_coref_map(coref_clusters, seq_len, passage_tokens):
             for j in range(i+1, len(c)):
                 i_s, i_e = c[i]
                 j_s, j_e = c[j]
+                '''
                 if not " ".join(passage_tokens[i_s:i_e+1]).lower() == " ".join(passage_tokens[j_s:j_e+1]).lower():
                     m[i_s:i_e+1, j_s:j_e+1] = 1
                     m[j_s:j_e+1, i_s:i_e+1] = 1
+                '''
+                m[i_s:i_e+1, j_s:j_e+1] = 1
+                m[j_s:j_e+1, i_s:i_e+1] = 1
     return m
 
 
@@ -267,6 +271,9 @@ if __name__ == '__main__':
     all_answer_texts = []
     all_pred_ans = []
     all_f1 = []
+    w_cnt = 0
+    g_sc = 0
+    ng_sc = 0
     print(" ".join(["{:10s}"]*11).format("Idx", "Head 0", "F1", "P Num", "T Num", "T-P",
                                                 "Head 1", "F1", "P Num", "T Num", "T-P"), file=logfile)
     for instance in tqdm(predictor._dataset_reader.read(args.data_path)):
@@ -295,7 +302,7 @@ if __name__ == '__main__':
         # coref res
         coref_map = get_coref_map(coref_clusters, len(passage_tokens), passage_tokens)
         assert np.array(self_att_scores).shape == (2, len(passage_tokens), len(passage_tokens))
-        assert np.allclose(np.sum(np.array(self_att_scores), axis=2), 1.)
+        #assert np.allclose(np.sum(np.array(self_att_scores), axis=2), 1.)
         assert len(sent_labels) == len(token_spans_sent)
         for i, (s, e) in enumerate(token_spans_sent):
             if not i == 0:
@@ -341,6 +348,14 @@ if __name__ == '__main__':
         all_answer_texts.append(answer_texts)
         all_f1.append(f1)
         all_pred_ans.append(best_span_str)
+        # att fit
+        val_w = np.sum(coref_map, axis=-1) > 0
+        g_sc_per = np.sum((self_att_scores * coref_map), axis=-1) * val_w
+        ng_sc_per = np.sum((self_att_scores * (1-coref_map)), axis=-1) * val_w
+        assert g_sc_per.shape[1] == ng_sc_per.shape[1]
+        w_cnt += np.sum(val_w)
+        g_sc += np.sum(g_sc_per, axis=-1)
+        ng_sc += np.sum(ng_sc_per, axis=-1)
         # att f1 analysis
         self_att_scores = torch.tensor(self_att_scores).float()
         coref_map = torch.tensor(coref_map.astype('float')).float()
@@ -358,7 +373,7 @@ if __name__ == '__main__':
             N_T = ssN_T + saN_T + nssN_T + nsaN_T
             _, _, att_f1 = PRF1(T_P, N_P, N_T)
             line += "{:<10.4f} {:<10.1f} {:<10.1f} {:<10.1f} ".format(att_f1, N_P, N_T, T_P)
-        print(line+'\n', file=logfile)
+        print(line, file=logfile)
     # display attention scores statistics
     coref_f1_res = [split_metric_table_by_quartile(tab) for tab in coref_f1_tables]
     print('\n\ndata Num:', num, 'Avg EM:', tot_em / num, 'Avg F1:', tot_f1 / num, file=logfile)
@@ -369,9 +384,28 @@ if __name__ == '__main__':
             print_stat(c['stat'], c['start'], c['end'], 'F1', file=logfile)
         print(file=logfile)
     print(file=logfile)
-    # sample and store att tokens
+
+    type_name = ["SP-SP", "SP-ALL", "~SP-SP", "~SP-ALL"]
+    print(" ".join(["{:10s}"]*11).format("Type", "Head 0", "F1", "P Num", "T Num", "T-P",
+                                                 "Head 1", "F1", "P Num", "T Num", "T-P"), file=logfile)
+    for type_idx in range(4):
+        line = "{:10s} ".format(type_name[type_idx])
+        for h_idx in range(num_att_heads):
+            line += "{:10s} ".format("Head %d" % h_idx)
+            T_P = att_f1_metrics[h_idx][type_idx]._true_positives.item()
+            F_P = att_f1_metrics[h_idx][type_idx]._false_positives.item()
+            F_N = att_f1_metrics[h_idx][type_idx]._false_negatives.item()
+            _, _, att_f1 = PRF1(T_P, T_P+F_P, T_P+F_N)
+            line += "{:<10.4f} {:<10.1f} {:<10.1f} {:<10.1f} ".format(att_f1, T_P+F_P, T_P+F_N, T_P)
+        print(line+'\n', file=logfile)
+
+    print("att fit", file=logfile)
+    print(g_sc / w_cnt, file=logfile)
+    print(ng_sc / w_cnt, file=logfile)
+    logfile.close()
 
     '''
+    # sample and store att tokens
     def KMostExamples(iterable, seen_doc_idxs):
         att_res = []
         for pair in iterable:
@@ -426,18 +460,3 @@ if __name__ == '__main__':
         with open(os.path.join(args.att_dir, 'heads%d.json' % h_idx), 'w') as f:
             json.dump(att_res, f, indent=4)
     '''
-    type_name = ["SP-SP", "SP-ALL", "~SP-SP", "~SP-ALL"]
-    print(" ".join(["{:10s}"]*11).format("Type", "Head 0", "F1", "P Num", "T Num", "T-P",
-                                                 "Head 1", "F1", "P Num", "T Num", "T-P"), file=logfile)
-    for type_idx in range(4):
-        line = "{:10s} ".format(type_name[type_idx])
-        for h_idx in range(num_att_heads):
-            line += "{:10s} ".format("Head %d" % h_idx)
-            T_P = att_f1_metrics[h_idx][type_idx]._true_positives.item()
-            F_P = att_f1_metrics[h_idx][type_idx]._false_positives.item()
-            F_N = att_f1_metrics[h_idx][type_idx]._false_negatives.item()
-            _, _, att_f1 = PRF1(T_P, T_P+F_P, T_P+F_N)
-            line += "{:<10.4f} {:<10.1f} {:<10.1f} {:<10.1f} ".format(att_f1, T_P+F_P, T_P+F_N, T_P)
-        print(line+'\n', file=logfile)
-
-    logfile.close()

@@ -10,6 +10,7 @@ if __name__ == '__main__':
     parser.add_argument('coref_path', help='path to the coref info')
     parser.add_argument('output_path', help='path to store the merged json data file')
     parser.add_argument('--bypara', action='store_true', default=False, help='whether the coref info is processed in para basis')
+    parser.add_argument('--key', default='coref_clusters', help='the key to use to add in the hotpot dataset')
     args = parser.parse_args()
 
     with open(args.data_path, 'r') as f:
@@ -34,6 +35,6 @@ if __name__ == '__main__':
                 coref_clusters = info['clusters']
             else:
                 coref_clusters = []
-        instance['coref_clusters'] = coref_clusters
+        instance[args.key] = coref_clusters
     with open(args.output_path, 'w') as f:
         json.dump(data, f)

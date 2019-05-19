@@ -1,4 +1,5 @@
 import React from 'react';
+import ReactTooltip from 'react-tooltip'
 import Collapsible from 'react-collapsible'
 import './balloon.css'
 import './style.css'
@@ -10,13 +11,20 @@ class Tok extends React.Component {
         <span>
         <span 
             className={this.props.class} 
-            data-balloon={this.props.tip} 
-            data-balloon-pos="up"
+            //data-balloon={this.props.tip} 
+            //data-balloon-pos="up"
+            data-tip
+            data-for={this.props.id} 
             onMouseOver={this.props.onMouseOver}
             onMouseOut={this.props.onMouseOut}
-            onClick={this.props.onClick}>
+            onClick={this.props.onClick}
+            style={this.props.style}>
             {this.props.token}
         </span>
+        { this.props.tip ? <ReactTooltip id={this.props.id}>
+                               {this.props.tip}
+                           </ReactTooltip> : null
+        }
         <span> </span>
         </span>
     );
@@ -35,15 +43,23 @@ class Sent extends React.Component {
                     var orig_i = i + this.props.offset;
                     var className = null;
                     var tip = null;
+                    var style = null;
                     if(orig_i === this.props.pos) {
-                        className = "title"
-                        tip = this.props.mouse_type
+                        //className = "title"
+                        style={
+                            backgroundColor: '#e6f7e3'
+                        };
+                        tip = this.props.mouse_type;
                     }
                     if(this.props.scores && this.props.scores[i] > 0) {
                         className = "attn";
-                        tip = this.props.scores[i];
+                        tip = this.props.scores[i].toString() + ", ";
+                        tip = tip + this.props.coref_labels[i].toString()[0].toUpperCase();
                     } else if(orig_i === this.props.click_pos) {
-                        className = "target"
+                        className = "target";
+                        style={
+                            background: 'rgb(139, 195, 245)'
+                        };
                         tip = this.props.type;
                     }
                     return <Tok 
@@ -53,7 +69,9 @@ class Sent extends React.Component {
                                 onMouseOver={() => mouse_over_func(orig_i)}
                                 onMouseOut={() => mouse_out_func()}
                                 onClick={() => click_func(orig_i)}
+                                style={style}
                                 key={i}
+                                id={this.props.id+'+'+i.toString()}
                             />
                 })
             }
@@ -76,6 +94,7 @@ class Doc extends React.Component {
                     var e = sp[1] + 1;
                     var sent_tokens = this.props.tokens.slice(s, e);
                     var sent_scores = this.props.scores ? this.props.scores.slice(s, e) : null;
+                    var sent_coref_labels = this.props.coref_labels ? this.props.coref_labels.slice(s, e) : null;
                     var className = null;
                     if(this.props.sent_labels[i] === 1) {
                         className = "support";
@@ -83,6 +102,7 @@ class Doc extends React.Component {
                     var sent_ele = <Sent class={className}
                                     tokens={sent_tokens}
                                     scores={sent_scores}
+                                    coref_labels={sent_coref_labels}
                                     pos={this.props.pos}
                                     click_pos={this.props.click_pos}
                                     offset={cur_offset}
@@ -92,6 +112,7 @@ class Doc extends React.Component {
                                     onMouseOut={mouse_out_func}
                                     onClick={click_func}
                                     key={i}
+                                    id={i.toString()}
                                 />;
                     cur_offset = cur_offset + e - s;
                     return sent_ele})
@@ -157,6 +178,7 @@ class HeadAtt extends React.Component {
     var click_pos = this.state.clickTokId;
     var tgt_dict = this.findTgtDict(click_pos)
     var scores = tgt_dict ? tgt_dict.scores : null;
+    var coref_labels = tgt_dict ? tgt_dict.labels : null;
     var type = tgt_dict ? tgt_dict.type : null;
     var pos = this.state.activeTokId;
     var mouse_tgt_dict = this.findTgtDict(pos)
@@ -167,6 +189,7 @@ class HeadAtt extends React.Component {
                sent_labels={this.props.sent_labels}
                tokens={this.props.doc}
                scores={scores}
+               coref_labels={coref_labels}
                pos={pos}
                click_pos={click_pos}
                type={type}

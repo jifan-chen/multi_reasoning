@@ -155,7 +155,7 @@ class Coref extends React.Component {
 
     return (
       <div className="form__field">
-        <Collapsible trigger="Coreference Clusters">
+        <Collapsible trigger={this.props.title}>
           <HighlightContainer isClicking={isClicking}>
             {spanWrapper(spanTree, 0)}
           </HighlightContainer>

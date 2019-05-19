@@ -30,6 +30,8 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
                                         passage_offsets: List[Tuple] = None,
                                         passage_dep_heads: List[Tuple[int, int]] = None,
                                         coref_clusters: List[List[List[int]]] = None,
+                                        evd_possible_chains: List[List[int]] = None,
+                                        ans_sent_idxs: List[int] = None,
                                         additional_metadata: Dict[str, Any] = None,
                                         para_limit: int = 2250) -> Instance:
     """
@@ -95,6 +97,21 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
     fields['sent_labels'] = ListField(sent_labels_)
     fields['sentence_spans'] = ListField(sent_spans)
 
+    if not evd_possible_chains is None:
+        evd_possible_chains_ = []
+        for chain in evd_possible_chains:
+            if len(chain) == 0 or any([s_idx >= len(sent_labels_) for s_idx in chain]):
+                # if there is no possible chain or any selected sentence in the chain exceeds para_limit,
+                # ignore the instance.
+                # the chain start with 0 will be filtered out in RLBidirectionalAttentionFlow Module.
+                chain = [0]
+            else:
+                # Since indice 0 is for eos, shifts by one
+                # Also add eos at the end
+                chain = [s_idx+1 for s_idx in chain] + [0]
+            evd_possible_chains_.append(chain)
+        fields['evd_chain_labels'] = ListField([ArrayField(np.array(ch), padding_value=0) for ch in evd_possible_chains_])
+
     # filter spans that exceed para limit so that the info in metadata is correct
     token_spans_sent = [(s, e if e < limit else limit - 1) for s, e in token_spans_sent if s < limit]
     token_spans_sp = [(s, e if e < limit else limit - 1) for s, e in token_spans_sp if s < limit]
@@ -106,6 +123,8 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
             if len(filtered_c) > 1:
                 filtered_clusters.append(filtered_c)
         coref_clusters = filtered_clusters
+    if not ans_sent_idxs is None:
+        ans_sent_idxs = [s_idx+1 for s_idx in ans_sent_idxs if s_idx < len(sent_labels_)]
 
     metadata = {'original_passage': passage_text, 'token_offsets': passage_offsets,
                 'question_tokens': [token.text for token in question_tokens],
@@ -116,6 +135,10 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
                 'coref_clusters': coref_clusters}
     if answer_texts:
         metadata['answer_texts'] = answer_texts
+    if not evd_possible_chains is None:
+        metadata['evd_possible_chains'] = evd_possible_chains_
+    if not ans_sent_idxs is None:
+        metadata['ans_sent_idxs'] = ans_sent_idxs
 
     # print('answer:', answer_texts[0])
     # print('answer_text:', answer_texts)
@@ -134,10 +157,15 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
 
             candidate_answers: Counter = Counter()
             for span_start, span_end in token_spans:
-                # print(span_start, span_end)
                 candidate_answers[(span_start, span_end)] += 1
+            for s, e in candidate_answers:
+                if not any([sp_s <= s and e <= sp_e for sp_s, sp_e in token_spans_sp]):
+                    candidate_answers[(s, e)] = 0
             span_start, span_end = candidate_answers.most_common(1)[0][0]
-            if span_start > para_limit or span_end > para_limit:
+            # print('best span:', span_start, span_end)
+            # print('span:', span_start, span_end)
+            # print(metadata['passage_tokens'][span_start:span_end + 1])
+            if span_start >= para_limit or span_end >= para_limit:
                 # print('span_start, span_end:', span_start, span_end)
                 fields['span_start'] = IndexField(-100, passage_field)
                 fields['span_end'] = IndexField(-100, passage_field)
@@ -199,12 +227,22 @@ class HotpotDatasetReader(DatasetReader):
                  token_indexers: Dict[str, TokenIndexer] = None,
                  para_limit: int = 2250,
                  sent_limit: int = 80,
+                 coref_type: str = 'allen',
+                 filter_compare_q: bool = False,
+                 chain: str = 'rb',
                  lazy: bool = False) -> None:
         super().__init__(lazy)
         self._tokenizer = tokenizer or WordTokenizer()
         self._token_indexers = token_indexers or {'tokens': SingleIdTokenIndexer()}
         self._para_limit = para_limit
         self.count = 0
+        if coref_type == 'allen':
+            self.coref_key = 'coref_clusters'
+        elif coref_type == 'spacy':
+            self.coref_key = 'spacy_coref_clusters'
+        self._filter_compare_q = filter_compare_q
+        self.chain = chain
+
 
     @staticmethod
     def find_all_span_starts(answer, context):
@@ -222,7 +260,13 @@ class HotpotDatasetReader(DatasetReader):
         article_id = article['_id']
         paragraphs = article['context']
         dependency_paragraphs = article['golden_head']
-        coref_clusters = article.get('coref_clusters', None)
+        coref_clusters = article.get(self.coref_key, None)
+        if self.chain == 'rb':
+            evd_possible_chains = article.get("possible_chain", None)
+            evd_possible_chains = [evd_possible_chains] if not evd_possible_chains is None else None
+        elif self.chain == 'nn':
+            evd_possible_chains = article.get("pred_chains", None)
+        answer_text = article['answer'].strip().replace("\n", "")
         concat_article = ""
         passage_tokens = []
         supporting_facts = []
@@ -232,8 +276,7 @@ class HotpotDatasetReader(DatasetReader):
         sent_labels = []
         sp_set = set(list(map(tuple, article['supporting_facts'])))
         passage_dep_heads = []
-        question_text = article['question'].strip().replace("\n", "")
-        answer_text = article['answer'].strip().replace("\n", "")
+        ans_sent_idxs = []
 
         for para, dep_para in zip(paragraphs, dependency_paragraphs):
             cur_title, cur_para = para[0], para[1]
@@ -263,23 +306,26 @@ class HotpotDatasetReader(DatasetReader):
                     sent_end = sent_offset[-1][1]
                     sent_starts.append(sent_start)
                     sent_ends.append(sent_end)
-                    # if (cur_title, sent_id) in sp_set:
-                    #     supporting_facts.append(sent)
-                    #     sent_labels.append(1)
-                    # else:
-                    #     sent_labels.append(0)
-
-                    if answer_text in sent:
+                    if (cur_title, sent_id) in sp_set:
+                        if answer_text in sent:
+                            ans_sent_idxs.append(len(sent_labels))
+                        supporting_facts.append(sent)
                         sent_labels.append(1)
                     else:
                         sent_labels.append(0)
-
                 passage_offsets.extend(sent_offset)
                 concat_article += sent
                 passage_tokens.extend(tokenized_sent)
 
+        question_text = article['question'].strip().replace("\n", "")
         span_starts = self.find_all_span_starts(answer_text, concat_article)
+        # print('article id:', article['_id'])
+        # print('span_starts:', span_starts)
+        if not span_starts:
+            # print(self.count)
+            self.count += 1
         span_ends = [start + len(answer_text) for start in span_starts]
+        # print('span_ends:', span_ends)
         sp_starts = [self.find_span_starts(s, concat_article) for s in supporting_facts]
         sp_ends = [start + len(span) for span, start in zip(supporting_facts, sp_starts)]
 
@@ -294,6 +340,8 @@ class HotpotDatasetReader(DatasetReader):
                 passage_offsets,
                 passage_dep_heads,
                 coref_clusters,
+                evd_possible_chains,
+                ans_sent_idxs,
                 article_id)
 
     @overrides
@@ -304,6 +352,11 @@ class HotpotDatasetReader(DatasetReader):
         logger.info("Reading file at %s", file_path)
         with open(file_path) as dataset_file:
             dataset = json.load(dataset_file)
+        if self._filter_compare_q:
+            # filter out instances whose answer is ``yes`` or ``no``
+            dataset = [d for d in dataset if not d['answer'] in ['yes', 'no']]
+            # filter out instances whose answer is in question
+            dataset = [d for d in dataset if not d['answer'] in d['question']]
         logger.info("Reading the dataset")
 
         for article in dataset:
@@ -329,6 +382,8 @@ class HotpotDatasetReader(DatasetReader):
                          passage_offsets: List[Tuple] = None,
                          passage_dep_heads: List[Tuple[int, int]] = None,
                          coref_clusters: List[List[List[int]]] = None,
+                         evd_possible_chains: List[List[int]] = None,
+                         ans_sent_idxs: List[int] = None,
                          article_id: str = None) -> Instance:
         # pylint: disable=arguments-differ
         if not passage_tokens:
@@ -382,6 +437,8 @@ class HotpotDatasetReader(DatasetReader):
                                                    passage_offsets,
                                                    passage_dep_heads,
                                                    coref_clusters,
+                                                   evd_possible_chains,
+                                                   ans_sent_idxs,
                                                    additional_metadata={'_id': article_id},
                                                    para_limit=self._para_limit)
 

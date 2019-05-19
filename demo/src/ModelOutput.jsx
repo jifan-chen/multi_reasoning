@@ -6,6 +6,7 @@ import './style.css'
 import HeadVisualization from './head_visualization.jsx'
 import QCVisualization from './qc_visualization.jsx'
 import EvdVisualization from './evd_visualization.jsx'
+import ChainVisualization from './chain_visualization.jsx'
 import Coref from './allenlp_src/demos/Coref.js'
 
 
@@ -33,11 +34,20 @@ class ModelOutput extends React.Component {
     // specify it like this, or with this name, but that's what we have right now.
     // var xLabelWidth = "70px";
     var ins = outputs
-    var coref_data = {"document": ins['doc'], "clusters": ins['coref_clusters']};
     var qc_scores = ins['qc_scores'];
     var qc_scores_sp = ins['qc_scores_sp'];
+    var coref_data = ins['coref_clusters']
     var pred_sent_probs = ins['pred_sent_probs'];
     var pred_sent_labels = ins['pred_sent_labels'];
+    var pred_sent_orders = ins['pred_sent_orders'];
+    var pred_chains = ins['pred_chains'];
+    var rb_chains = ins['rb_chains'];
+    var chain_em = ins['chain_em'];
+    var topk_chain_em = ins['topk_chain_em'];
+    var ans_sent_idxs = ins['ans_sent_idxs'];
+    var pred_chains_len = pred_chains.map(x => x.length);
+    var top_chain_len = pred_chains_len[0]
+    var topk_chain_len = Math.max(...pred_chains_len)
     console.log(ins);
 
     return (
@@ -58,39 +68,57 @@ class ModelOutput extends React.Component {
                   <span className="title">F1:</span> {ins['f1']} <br/>
                   {pred_sent_probs ? <span><span className="title">Evd Precision:</span> {ins['evd_measure']['prec']}<br/></span> : null}
                   {pred_sent_probs ? <span><span className="title">Evd Recall:</span> {ins['evd_measure']['recl']}<br/></span> : null}
-                  {pred_sent_probs ? <span><span className="title">Evd F1:</span> {ins['evd_measure']['f1']}</span> : null}
+                  {pred_sent_probs ? <span><span className="title">Evd F1:</span> {ins['evd_measure']['f1']}<br/><br/></span> : null}
+                  {pred_chains ? <span><span className="title">Chain EM w.r.t Rule-Based:</span> {chain_em.toString()}<br/></span> : null}
+                  {pred_chains ? <span><span className="title">Top K Chain EM w.r.t Rule-Based:</span> {topk_chain_em.toString()}<br/></span> : null}
+                  {pred_chains ? <span><span className="title">Length of the Rule-Based Chain:</span> {rb_chains.length}<br/></span> : null}
+                  {pred_chains ? <span><span className="title">Length of the Top Chain:</span> {top_chain_len}<br/></span> : null}
+                  {pred_chains ? <span><span className="title">Max Length of Top K Chains:</span> {topk_chain_len}</span> : null}
               </div>
           </div>
         </div>
         
-        <div className="form__field">
-          <HeadVisualization 
-               sent_spans={ins['sent_spans']}
-               sent_labels={ins['sent_labels']}
-               doc={ins['doc']}
-               attns={ins['attns']}
-          />
-        </div>
-        <div className="form__field">
-          <Coref 
-               responseData={coref_data}
-          />
-        </div>
-        <div>
-          <QCVisualization
-              sent_spans={ins['sent_spans']}
-              sent_labels={ins['sent_labels']}
-              doc={ins['doc']}
-              colLabels={ins['question_tokens']} 
-              rowLabels={ins['doc']}
-              data={qc_scores} 
-              includeSlider={true} 
-              showAllCols={true} 
-              name="Passage-Question"
-          />
-        </div>
+        { ins['attns'] ?
+            <div className="form__field">
+              <HeadVisualization 
+                   sent_spans={ins['sent_spans']}
+                   sent_labels={ins['sent_labels']}
+                   doc={ins['doc']}
+                   attns={ins['attns']}
+              />
+            </div> : null
+        }
+        { coref_data ?
+            Object.keys(coref_data).map((title, i) =>
+                {  
+                    //var c_data = {"document": ins['doc'], "clusters": coref_data[title]};
+                    return  <div className="form__field" key={i}>
+                            <Coref 
+                                responseData={coref_data[title]}
+                                title={title}
+                                key={i}
+                            />
+                        </div>
+                })
+             : null
+        }
+        { qc_scores ?
+            <div className="form__field">
+              <QCVisualization
+                  sent_spans={ins['sent_spans']}
+                  sent_labels={ins['sent_labels']}
+                  doc={ins['doc']}
+                  colLabels={ins['question_tokens']} 
+                  rowLabels={ins['doc']}
+                  data={qc_scores} 
+                  includeSlider={true} 
+                  showAllCols={true} 
+                  name="Passage-Question"
+              />
+            </div> : null
+        }
         { qc_scores_sp ?
-            <div>
+            <div className="form__field">
               <QCVisualization
                   sent_spans={ins['sent_spans']}
                   sent_labels={ins['sent_labels']}
@@ -105,12 +133,32 @@ class ModelOutput extends React.Component {
             </div> : null
         }
         { pred_sent_probs ?
-            <div>
+            <div className="form__field">
               <EvdVisualization
                   sent_spans={ins['sent_spans']}
                   sent_labels={ins['sent_labels']}
                   pred_sent_labels={pred_sent_labels}
                   pred_sent_probs={pred_sent_probs}
+                  pred_sent_orders={pred_sent_orders}
+                  att_scores={ins['evd_attns']}
+                  doc={ins['doc']}
+              />
+            </div> : null
+        }
+        { pred_chains ?
+            <div className="form__field">
+              <ChainVisualization
+                  question={ins['question']}
+                  answer={ins['answer']}
+                  ans_sent_idxs={ans_sent_idxs}
+                  beam_pred_chains={pred_chains}
+                  rb_chain={rb_chains}
+                  sent_spans={ins['sent_spans']}
+                  sent_labels={ins['sent_labels']}
+                  pred_sent_labels={pred_sent_labels}
+                  pred_sent_probs={pred_sent_probs}
+                  pred_sent_orders={pred_sent_orders}
+                  att_scores={null}
                   doc={ins['doc']}
               />
             </div> : null
