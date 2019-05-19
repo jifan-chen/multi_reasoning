@@ -150,16 +150,6 @@
       "dropout": 0.2
     },
 
-    "span_self_attentive_encoder": {
-      "type": "stacked_self_attention",
-      "num_attention_heads": 2,
-      "input_dim": 200,
-      "hidden_dim": 200,
-      "projection_dim": 200,
-      "feedforward_hidden_dim": 200,
-      "num_layers": 1
-    },
-
     "type_encoder": {
       "type": "gru",
       "bidirectional": true,
@@ -169,7 +159,7 @@
       "dropout": 0.0
     },
 
-    "dropout": 0.0
+    "dropout": 0.2
   },
 
   "iterator": {

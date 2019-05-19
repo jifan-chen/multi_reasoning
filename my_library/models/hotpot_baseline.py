@@ -9,11 +9,10 @@ from allennlp.models.model import Model
 from allennlp.modules import Seq2SeqEncoder, TextFieldEmbedder
 from allennlp.nn import util, RegularizerApplicator
 from allennlp.training.metrics import F1Measure, SquadEmAndF1, Average
-from my_library.models.utils import convert_sequence_to_spans, convert_span_to_sequence
-from my_library.metrics import AttF1Measure, SentAcc
+from my_library.metrics import AttF1Measure
 
 
-@Model.register("hotpot_decoupled")
+@Model.register("hotpot_baseline")
 class BidirectionalAttentionFlow(Model):
     def __init__(self, vocab: Vocabulary,
                  text_field_embedder: TextFieldEmbedder,
@@ -51,7 +50,6 @@ class BidirectionalAttentionFlow(Model):
 
         encoding_dim = span_start_encoder.get_output_dim()
 
-        self._span_gate = SpanGate(encoding_dim, gate_threshold=0.3)
         self.qc_att = BiAttention(encoding_dim, dropout)
         self.qc_att_sp = BiAttention(encoding_dim, dropout)
         self.linear_1 = nn.Sequential(
@@ -62,7 +60,6 @@ class BidirectionalAttentionFlow(Model):
             nn.Linear(encoding_dim * 4, encoding_dim),
             nn.ReLU()
         )
-        self.self_att = BiAttention(encoding_dim, dropout, strong_sup=strong_sup)
 
         self.linear_start = nn.Linear(encoding_dim, 1)
 
@@ -76,129 +73,143 @@ class BidirectionalAttentionFlow(Model):
 
         self._coref_f1_metric = AttF1Measure(0.1)
 
-        self._sent_metrics = SentAcc()
-
         self._loss_trackers = {'loss': Average(),
-                               'strong_sup_loss': Average()}
+                               'start_loss': Average(),
+                               'end_loss': Average(),
+                               'type_loss': Average()}
+        if self._strong_sup:
+            self._loss_trackers['coref_sup_loss'] = Average()
 
     def forward(self,  # type: ignore
                 question: Dict[str, torch.LongTensor],
                 passage: Dict[str, torch.LongTensor],
-                sentence_spans: torch.IntTensor = None,
-                sent_labels: torch.IntTensor = None,
-                metadata: List[Dict[str, Any]] = None,
                 span_start: torch.IntTensor = None,
                 span_end: torch.IntTensor = None,
+                sentence_spans: torch.IntTensor = None,
+                sent_labels: torch.IntTensor = None,
                 q_type: torch.IntTensor = None,
                 sp_mask: torch.IntTensor = None,
-                coref_mask: torch.FloatTensor = None
-                ) -> Dict[str, torch.Tensor]:
+                coref_mask: torch.FloatTensor = None,
+                metadata: List[Dict[str, Any]] = None) -> Dict[str, torch.Tensor]:
 
         embedded_question = self._text_field_embedder(question)
         embedded_passage = self._text_field_embedder(passage)
-        decoupled_passage, spans_mask = convert_sequence_to_spans(embedded_passage, sentence_spans)
-        batch_size, num_spans, max_batch_span_width = spans_mask.size()
-        encodeded_decoupled_passage = \
-            self._phrase_layer_sp(
-                decoupled_passage, spans_mask.view(batch_size * num_spans, -1))
-        context_output_sp = convert_span_to_sequence(embedded_passage, encodeded_decoupled_passage, spans_mask)
-
         ques_mask = util.get_text_field_mask(question).float()
         context_mask = util.get_text_field_mask(passage).float()
 
-        ques_output_sp = self._phrase_layer_sp(embedded_question, ques_mask)
+        ques_output = self._dropout(self._phrase_layer(embedded_question, ques_mask))
+        context_output = self._dropout(self._phrase_layer(embedded_passage, context_mask))
 
-        modeled_passage_sp = self.qc_att_sp(context_output_sp, ques_output_sp, ques_mask)
-        modeled_passage_sp = self.linear_2(modeled_passage_sp)
-        modeled_passage_sp = self._modeling_layer_sp(modeled_passage_sp, context_mask)
-        # Shape(spans_rep): (batch_size * num_spans, max_batch_span_width, embedding_dim)
-        # Shape(spans_mask): (batch_size, num_spans, max_batch_span_width)
-        spans_rep_sp, spans_mask = convert_sequence_to_spans(modeled_passage_sp, sentence_spans)
-        # Shape(gate_logit): (batch_size * num_spans, 2)
-        # Shape(gate): (batch_size * num_spans, 1)
-        # Shape(pred_sent_probs): (batch_size * num_spans, 2)
-        gate_logit = self._span_gate(spans_rep_sp, spans_mask)
-        batch_size, num_spans, max_batch_span_width = spans_mask.size()
-        sent_mask = (sent_labels >= 0).long()
-        sent_labels = sent_labels * sent_mask
-        # print(sent_labels)
-        # print(gate_logit.shape)
-        # print(gate_logit)
-        strong_sup_loss = torch.mean(-torch.log(
-            torch.sum(F.softmax(gate_logit) * sent_labels.float().view(batch_size, num_spans), dim=-1) + 1e-10))
+        modeled_passage, qc_score = self.qc_att(context_output, ques_output, ques_mask)
+        modeled_passage = self.linear_1(modeled_passage)
+        modeled_passage = self._modeling_layer(modeled_passage, context_mask)
 
-        # strong_sup_loss = F.nll_loss(F.log_softmax(gate_logit, dim=-1).view(batch_size * num_spans, -1),
-        #                              sent_labels.long().view(batch_size * num_spans), ignore_index=-1)
+        batch_size = modeled_passage.size()[0]
+        output_start = self._span_start_encoder(modeled_passage, context_mask)
+        span_start_logits = self.linear_start(output_start).squeeze(2) - 1e30 * (1 - context_mask)
+        output_end = torch.cat([modeled_passage, output_start], dim=2)
+        output_end = self._span_end_encoder(output_end, context_mask)
+        span_end_logits = self.linear_end(output_end).squeeze(2) - 1e30 * (1 - context_mask)
 
-        gate = torch.argmax(gate_logit.view(batch_size, num_spans), -1)
-        # gate = (gate >= 0.5).long().view(batch_size, num_spans)
+        output_type = torch.cat([modeled_passage, output_end, output_start], dim=2)
+        output_type = torch.max(output_type, 1)[0]
+        predict_type = self.linear_type(output_type)
+        type_predicts = torch.argmax(predict_type, 1)
+
+        best_span = self.get_best_span(span_start_logits, span_end_logits)
+
         output_dict = {
-            "gate": gate
+            "span_start_logits": span_start_logits,
+            "span_end_logits": span_end_logits,
+            "best_span": best_span,
+            "qc_score": qc_score
         }
 
-        loss = strong_sup_loss
+        # Compute the loss for training.
+        if span_start is not None:
+            try:
+                start_loss = nll_loss(util.masked_log_softmax(span_start_logits, None), span_start.squeeze(-1))
+                end_loss = nll_loss(util.masked_log_softmax(span_end_logits, None), span_end.squeeze(-1))
+                type_loss = nll_loss(util.masked_log_softmax(predict_type, None), q_type)
+                loss = start_loss + end_loss + type_loss
+                self._loss_trackers['loss'](loss)
+                self._loss_trackers['start_loss'](start_loss)
+                self._loss_trackers['end_loss'](end_loss)
+                self._loss_trackers['type_loss'](type_loss)
+                output_dict["loss"] = loss
 
-        output_dict["loss"] = loss
+            except RuntimeError:
+                print('\n meta_data:', metadata)
+                print(span_start_logits.shape)
 
+        # Compute the EM and F1 on SQuAD and add the tokenized input to the output.
         if metadata is not None:
+            output_dict['best_span_str'] = []
+            output_dict['answer_texts'] = []
             question_tokens = []
             passage_tokens = []
+            token_spans_sp = []
+            token_spans_sent = []
             sent_labels_list = []
+            coref_clusters = []
             ids = []
-
+            count_yes = 0
+            count_no = 0
             for i in range(batch_size):
                 question_tokens.append(metadata[i]['question_tokens'])
                 passage_tokens.append(metadata[i]['passage_tokens'])
+                token_spans_sp.append(metadata[i]['token_spans_sp'])
+                token_spans_sent.append(metadata[i]['token_spans_sent'])
                 sent_labels_list.append(metadata[i]['sent_labels'])
+                coref_clusters.append(metadata[i]['coref_clusters'])
                 ids.append(metadata[i]['_id'])
+                passage_str = metadata[i]['original_passage']
+                offsets = metadata[i]['token_offsets']
+                if type_predicts[i] == 1:
+                    best_span_string = 'yes'
+                    count_yes += 1
+                elif type_predicts[i] == 2:
+                    best_span_string = 'no'
+                    count_no += 1
+                else:
+                    predicted_span = tuple(best_span[i].detach().cpu().numpy())
+                    start_offset = offsets[predicted_span[0]][0]
+                    end_offset = offsets[predicted_span[1]][1]
+                    best_span_string = passage_str[start_offset:end_offset]
 
-            self._sent_metrics(gate, sent_labels)
-            # print(self.get_prediction(gate, sent_labels).item())
-            # print(self.get_prediction(gate, sent_labels).data)
-            output_dict['predict'] = [self.get_prediction(gate, sent_labels).data]
+                output_dict['best_span_str'].append(best_span_string)
+                answer_texts = metadata[i].get('answer_texts', [])
+                output_dict['answer_texts'].append(answer_texts)
+
+                if answer_texts:
+                    self._squad_metrics(best_span_string, answer_texts)
             output_dict['question_tokens'] = question_tokens
             output_dict['passage_tokens'] = passage_tokens
+            output_dict['token_spans_sp'] = token_spans_sp
+            output_dict['token_spans_sent'] = token_spans_sent
             output_dict['sent_labels'] = sent_labels_list
+            output_dict['coref_clusters'] = coref_clusters
             output_dict['_id'] = ids
-            # print(ids)
 
         return output_dict
 
     def get_metrics(self, reset: bool = False) -> Dict[str, float]:
+        exact_match, f1_score = self._squad_metrics.get_metric(reset)
         p, r, evidence_f1_socre = self._f1_metrics.get_metric(reset)
-        sent_acc = self._sent_metrics.get_metric(reset)
+        coref_p, coref_r, coref_f1_score = self._coref_f1_metric.get_metric(reset)
         metrics = {
+                'em': exact_match,
+                'f1': f1_score,
                 'evd_p': p,
                 'evd_r': r,
                 'evd_f1': evidence_f1_socre,
-                'sent_acc': sent_acc
+                'coref_p': coref_p,
+                'coref_r': coref_r,
+                'core_f1': coref_f1_score,
                 }
-        # for name, tracker in self._loss_trackers.items():
-        #     metrics[name] = tracker.get_metric(reset).item()
+        for name, tracker in self._loss_trackers.items():
+            metrics[name] = tracker.get_metric(reset).item()
         return metrics
-
-    @staticmethod
-    def to_one_hot(y, n_dims=None):
-        """ Take integer y (tensor or variable) with n dims and convert it to 1-hot representation with n+1 dims. """
-        y_tensor = y.data if isinstance(y, Variable) else y
-        y_tensor = y_tensor.type(torch.LongTensor).view(-1, 1)
-        n_dims = n_dims if n_dims is not None else int(torch.max(y_tensor)) + 1
-        y_one_hot = torch.zeros(y_tensor.size()[0], n_dims).scatter_(1, y_tensor, 1)
-        y_one_hot = y_one_hot.view(*y.shape, -1)
-        return Variable(y_one_hot) if isinstance(y, Variable) else y_one_hot
-
-    def get_prediction(self, predicted_labels, gold_labels):
-        batch_size = predicted_labels.size(0)
-        predict_labels = predicted_labels.view(batch_size)
-        gold_labels = gold_labels.view(batch_size, -1)
-        mask = (gold_labels >= 0).long()
-        # print('predict:', predict_labels)
-        # print('gold_labels:', gold_labels)
-        predict_onehot = self.to_one_hot(predict_labels, gold_labels.size(1))
-        # print('overlap:', predict_onehot)
-        predict = torch.sum(predict_onehot.float().cuda() * gold_labels.float(), dim=-1)
-        predict = (predict >= 1).long()
-        return predict
 
     @staticmethod
     def get_best_span(span_start_logits: torch.Tensor, span_end_logits: torch.Tensor) -> torch.Tensor:
@@ -226,39 +237,6 @@ class BidirectionalAttentionFlow(Model):
                     best_word_span[b, 1] = j
                     max_span_log_prob[b] = val1 + val2
         return best_word_span
-
-
-class SpanGate(nn.Module):
-    def __init__(self, span_dim, gate_threshold):
-        super().__init__()
-        self.modeled_gate = nn.Sequential(
-            nn.Linear(span_dim, 100),
-            nn.ReLU(),
-            nn.Linear(100, 1)
-        )
-        self.gate_threshold = gate_threshold
-
-    def forward(self,
-                spans_tensor: torch.FloatTensor,
-                spans_mask: torch.FloatTensor):
-
-        batch_size, num_spans, max_batch_span_width = spans_mask.size()
-        # Shape: (batch_size * num_spans, embedding_dim)
-        max_pooled_span_emb = torch.max(spans_tensor, dim=1)[0]
-        # Shape: (batch_size * num_spans, 1)
-        gate_logit = self.modeled_gate(max_pooled_span_emb)
-        gate_logit = gate_logit.view(batch_size, num_spans)
-        # gate_prob = F.softmax(gate_logit, dim=-1)
-        # gate_prob = torch.chunk(gate_prob, 2, dim=-1)[1].view(batch_size * num_spans, -1)
-        #
-        # # print(torch.sum(positive_labels.view(-1) * gate.view(-1)))
-        # dumb_gate = torch.full_like(gate_prob.view(batch_size * num_spans, -1).float(), self.gate_threshold)
-        # new_gate = torch.cat([dumb_gate, gate_prob], dim=-1)
-
-        # gate = (gate >= 0.3).long()
-        # attended_span_embeddings = attended_span_embeddings * gate.unsqueeze(-1).float()
-        return gate_logit
-        # return gate_logit, gate_prob, new_gate
 
 
 class LockedDropout(nn.Module):
@@ -304,8 +282,7 @@ class BiAttention(nn.Module):
         output_two = torch.bmm(weight_two, input)
 
         if self.strong_sup:
-            # print(att.shape, mask_sp.shape)
             loss = torch.mean(-torch.log(torch.sum(weight_one * mask_sp.unsqueeze(1), dim=-1) + 1e-30))
-            return torch.cat([input, output_one, input*output_one, output_two*output_one], dim=-1), loss
+            return torch.cat([input, output_one, input*output_one, output_two*output_one], dim=-1), loss, weight_one
         else:
-            return torch.cat([input, output_one, input*output_one, output_two*output_one], dim=-1)
+            return torch.cat([input, output_one, input*output_one, output_two*output_one], dim=-1), weight_one
