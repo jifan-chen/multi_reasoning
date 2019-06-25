@@ -34,9 +34,6 @@ class RLBidirectionalAttentionFlow(Model):
                  modeling_layer_sp: Seq2SeqEncoder,
                  span_gate: Seq2SeqEncoder,
                  dropout: float = 0.2,
-                 strong_sup: bool = False,
-                 strict_eos: bool = False,
-                 account_trans: bool = False,
                  output_att_scores: bool = True,
                  regularizer: Optional[RegularizerApplicator] = None) -> None:
 
@@ -58,9 +55,6 @@ class RLBidirectionalAttentionFlow(Model):
 
         self._self_attention_layer = self_attention_layer
 
-        self._strong_sup = strong_sup
-        self._strict_eos = strict_eos
-        self._account_trans = account_trans
         self._output_att_scores = output_att_scores
 
         encoding_dim = span_start_encoder.get_output_dim()
@@ -81,25 +75,15 @@ class RLBidirectionalAttentionFlow(Model):
 
         self._f1_metrics = AttF1Measure(0.5, top_k=False)
 
-        self._reward_metric = PerStepInclusion(eos_idx=0)
-
-        self._coref_f1_metric = AttF1Measure(0.1)
-
         self._loss_trackers = {'loss': Average(),
                                'start_loss': Average(),
                                'end_loss': Average(),
                                'type_loss': Average(),
                                'rl_loss': Average()}
-        if self._strong_sup:
-            self._loss_trackers['coref_sup_loss'] = Average()
 
-        if self._span_gate.evd_decoder._train_helper_type == 'teacher_forcing':
-            self._evd_train_type = 'supervised'
-            self.evd_sup_acc_metric = ChainAccuracy()
-            self.evd_ans_metric = Average()
-            self.evd_beam_ans_metric = Average()
-        else:
-            self._evd_train_type = 'rl'
+        self.evd_sup_acc_metric = ChainAccuracy()
+        self.evd_ans_metric = Average()
+        self.evd_beam_ans_metric = Average()
 
     def forward(self,  # type: ignore
                 question: Dict[str, torch.LongTensor],
@@ -110,9 +94,6 @@ class RLBidirectionalAttentionFlow(Model):
                 sent_labels: torch.IntTensor = None,
                 evd_chain_labels: torch.IntTensor = None,
                 q_type: torch.IntTensor = None,
-                sp_mask: torch.IntTensor = None,
-                # dep_mask: torch.IntTensor = None,
-                coref_mask: torch.FloatTensor = None,
                 metadata: List[Dict[str, Any]] = None) -> Dict[str, torch.Tensor]:
 
         # In this model, we only take the first chain in ``evd_chain_labels`` for supervision
@@ -121,29 +102,30 @@ class RLBidirectionalAttentionFlow(Model):
         # In that case, use the mask to ignore those instances
         evd_instance_mask = (evd_chain_labels[:, 0] != 0).float() if not evd_chain_labels is None else None
 
+        # word + char embedding
         embedded_question = self._text_field_embedder(question)
         embedded_passage = self._text_field_embedder(passage)
+        # mask
         ques_mask = util.get_text_field_mask(question).float()
         context_mask = util.get_text_field_mask(passage).float()
 
-        #embedded_question = self._dropout(embedded_question)
-        #embedded_passage = self._dropout(embedded_passage)
-
+        # BiDAF for answer prediction
         ques_output = self._dropout(self._phrase_layer(embedded_question, ques_mask))
         context_output = self._dropout(self._phrase_layer(embedded_passage, context_mask))
-        #ques_output = self._phrase_layer(embedded_question, ques_mask)
-        #context_output = self._phrase_layer(embedded_passage, context_mask)
 
         modeled_passage, _, qc_score = self.qc_att(context_output, ques_output, ques_mask)
+
         modeled_passage = self._modeling_layer(modeled_passage, context_mask)
 
+        # BiDAF for chain prediction
         ques_output_sp = self._dropout(self._phrase_layer_sp(embedded_question, ques_mask))
         context_output_sp = self._dropout(self._phrase_layer_sp(embedded_passage, context_mask))
-        #ques_output_sp = self._phrase_layer_sp(embedded_question, ques_mask)
-        #context_output_sp = self._phrase_layer_sp(embedded_passage, context_mask)
 
         modeled_passage_sp, _, qc_score_sp = self.qc_att_sp(context_output_sp, ques_output_sp, ques_mask)
+
         modeled_passage_sp = self._modeling_layer_sp(modeled_passage_sp, context_mask)
+
+        # chain prediction
         # Shape(spans_rep): (batch_size * num_spans, max_batch_span_width, embedding_dim)
         # Shape(spans_mask): (batch_size, num_spans, max_batch_span_width)
         spans_rep_sp, spans_mask = convert_sequence_to_spans(modeled_passage_sp, sentence_spans)
@@ -170,23 +152,15 @@ class RLBidirectionalAttentionFlow(Model):
                                  self._gate_sent_encoder)
         batch_size, num_spans, max_batch_span_width = spans_mask.size()
 
+        # get the embeddings of the words of the sentences in the predicted chain
         spans_rep = spans_rep * gate.unsqueeze(-1)
         attended_sent_embeddings = convert_span_to_sequence(modeled_passage_sp, spans_rep, spans_mask)
 
         modeled_passage = attended_sent_embeddings + modeled_passage
 
-        if self._strong_sup:
-            self_att_passage = self._self_attention_layer(modeled_passage,
-                                                          mask=context_mask,
-                                                          mask_sp=coref_mask,
-                                                          att_sup_metric=self._coref_f1_metric)
-            modeled_passage = modeled_passage + self_att_passage[0]
-            coref_sup_loss = self_att_passage[1]
-            self_att_score = self_att_passage[2]
-        else:
-            self_att_passage = self._self_attention_layer(modeled_passage, mask=context_mask)
-            modeled_passage = modeled_passage + self_att_passage[0]
-            self_att_score = self_att_passage[2]
+        self_att_passage = self._self_attention_layer(modeled_passage, mask=context_mask)
+        modeled_passage = modeled_passage + self_att_passage[0]
+        self_att_score = self_att_passage[2]
 
         output_start = self._span_start_encoder(modeled_passage, context_mask)
         span_start_logits = self.linear_start(output_start).squeeze(2) - 1e30 * (1 - context_mask)
@@ -235,35 +209,18 @@ class RLBidirectionalAttentionFlow(Model):
         print("TP:", evd_TP)
         print("NP:", evd_NP)
         print("NT:", evd_NT)
-        per_step_included, per_step_mask, eos_mask = self._reward_metric(all_predictions.unsqueeze(1), sent_labels,
-                                                                         gate_mask,
-                                                                         instance_mask=evd_instance_mask if self.training else None)
-        per_step_included, per_step_mask, eos_mask = per_step_included.squeeze(1), per_step_mask.squeeze(1), eos_mask.squeeze(1)
-        #print("per_step_included:", per_step_included)
-        #print("per_step_mask:", per_step_mask)
-        #print("eos_mask:", eos_mask)
         evd_ps = np.array(evd_TP) / (np.array(evd_NP) + 1e-13)
         evd_rs = np.array(evd_TP) / (np.array(evd_NT) + 1e-13)
         evd_f1s = 2. * ((evd_ps * evd_rs) / (evd_ps + evd_rs + 1e-13))
         #print("evd_f1s:", evd_f1s)
-        if self._evd_train_type == 'supervised':
-            predict_mask = get_evd_prediction_mask(all_predictions.unsqueeze(1), eos_idx=0)[0]
-            gold_mask = get_evd_prediction_mask(evd_chain_labels, eos_idx=0)[0]
-            # default to take multiple predicted chains, so unsqueeze dim 1
-            self.evd_sup_acc_metric(predictions=all_predictions.unsqueeze(1), gold_labels=evd_chain_labels,
-                                    predict_mask=predict_mask, gold_mask=gold_mask, instance_mask=evd_instance_mask)
-            print("gold chain:", evd_chain_labels)
-        if self._evd_train_type == 'rl':
-            # RL Loss equals ``-log(P) * (R - baseline)``
-            # Shape: (batch_size, num_decoding_steps)
-            per_step_rs = Evd_Reward(per_step_included, per_step_mask, eos_mask, evd_rs, evd_f1s,
-                                     strict_eos=self._strict_eos, account_trans=self._account_trans)
-            per_step_rs = per_step_rs.to(all_logprobs.device)
-            #print("per_step_rs:", per_step_rs)
-            rl_loss = -torch.mean(torch.sum(all_logprobs * per_step_rs, dim=1))
-        elif self._evd_train_type == 'supervised':
-            per_step_mask = per_step_mask.to(all_logprobs.device)
-            rl_loss = -torch.mean(torch.sum(all_logprobs * per_step_mask * evd_instance_mask[:, None], dim=1))
+        predict_mask = get_evd_prediction_mask(all_predictions.unsqueeze(1), eos_idx=0)[0]
+        gold_mask = get_evd_prediction_mask(evd_chain_labels, eos_idx=0)[0]
+        # ChainAccuracy defaults to take multiple predicted chains, so unsqueeze dim 1
+        self.evd_sup_acc_metric(predictions=all_predictions.unsqueeze(1), gold_labels=evd_chain_labels,
+                                predict_mask=predict_mask, gold_mask=gold_mask, instance_mask=evd_instance_mask)
+        print("gold chain:", evd_chain_labels)
+        predict_mask = predict_mask.float().squeeze(1)
+        rl_loss = -torch.mean(torch.sum(all_logprobs * predict_mask * evd_instance_mask[:, None], dim=1))
 
         # Compute the EM and F1 on SQuAD and add the tokenized input to the output.
         # Compute before loss for rl
@@ -275,7 +232,6 @@ class RLBidirectionalAttentionFlow(Model):
             token_spans_sp = []
             token_spans_sent = []
             sent_labels_list = []
-            coref_clusters = []
             evd_possible_chains = []
             ans_sent_idxs = []
             pred_chains_include_ans = []
@@ -291,7 +247,6 @@ class RLBidirectionalAttentionFlow(Model):
                 token_spans_sp.append(metadata[i]['token_spans_sp'])
                 token_spans_sent.append(metadata[i]['token_spans_sent'])
                 sent_labels_list.append(metadata[i]['sent_labels'])
-                coref_clusters.append(metadata[i]['coref_clusters'])
                 ids.append(metadata[i]['_id'])
                 passage_str = metadata[i]['original_passage']
                 offsets = metadata[i]['token_offsets']
@@ -341,7 +296,6 @@ class RLBidirectionalAttentionFlow(Model):
             output_dict['token_spans_sp'] = token_spans_sp
             output_dict['token_spans_sent'] = token_spans_sent
             output_dict['sent_labels'] = sent_labels_list
-            output_dict['coref_clusters'] = coref_clusters
             output_dict['evd_possible_chains'] = evd_possible_chains
             output_dict['ans_sent_idxs'] = ans_sent_idxs
             output_dict['pred_chains_include_ans'] = pred_chains_include_ans
@@ -358,9 +312,6 @@ class RLBidirectionalAttentionFlow(Model):
             # self._span_accuracy(best_span, torch.stack([span_start, span_end], -1))
             type_loss = nll_loss(util.masked_log_softmax(predict_type, None), q_type)
             loss = start_loss + end_loss + type_loss + rl_loss
-            if self._strong_sup:
-                loss += coref_sup_loss
-                self._loss_trackers['coref_sup_loss'](coref_sup_loss)
             #print('start_loss:{} end_loss:{} type_loss:{}'.format(start_loss,end_loss,type_loss))
             self._loss_trackers['loss'](loss)
             self._loss_trackers['start_loss'](start_loss)
@@ -377,29 +328,22 @@ class RLBidirectionalAttentionFlow(Model):
 
     def get_metrics(self, reset: bool = False) -> Dict[str, float]:
         exact_match, f1_score = self._squad_metrics.get_metric(reset)
-        p, r, evidence_f1_socre = self._f1_metrics.get_metric(reset)
-        p_ = self._reward_metric.get_metric(reset)
-        coref_p, coref_r, coref_f1_score = self._coref_f1_metric.get_metric(reset)
+        p, r, evidence_f1_score = self._f1_metrics.get_metric(reset)
         ans_in_evd = self.evd_ans_metric.get_metric(reset)
         beam_ans_in_evd = self.evd_beam_ans_metric.get_metric(reset)
         metrics = {
                 'em': exact_match,
                 'f1': f1_score,
                 'evd_p': p,
-                'evd_p_': p_,
                 'evd_r': r,
-                'evd_f1': evidence_f1_socre,
-                'coref_p': coref_p,
-                'coref_r': coref_r,
-                'core_f1': coref_f1_score,
+                'evd_f1': evidence_f1_score,
                 'ans_in_evd': ans_in_evd,
                 'beam_ans_in_evd': beam_ans_in_evd,
                 }
         for name, tracker in self._loss_trackers.items():
             metrics[name] = tracker.get_metric(reset).item()
-        if self._evd_train_type == 'supervised':
-            evd_sup_acc = self.evd_sup_acc_metric.get_metric(reset)
-            metrics['evd_sup_acc'] = evd_sup_acc
+        evd_sup_acc = self.evd_sup_acc_metric.get_metric(reset)
+        metrics['evd_sup_acc'] = evd_sup_acc
         return metrics
 
     @staticmethod
@@ -447,7 +391,6 @@ class SpanGate(Seq2SeqEncoder):
                                              max_decoding_steps=max_decoding_steps,
                                              predict_eos=predict_eos,
                                              cell=cell)
-        self._pass_label = pass_label
 
     def forward(self,
                 spans_tensor: torch.FloatTensor,
@@ -463,15 +406,6 @@ class SpanGate(Seq2SeqEncoder):
         batch_size, num_spans, max_batch_span_width = spans_mask.size()
         # Shape: (batch_size * num_spans, embedding_dim)
         max_pooled_span_emb = torch.max(spans_tensor, dim=1)[0]
-        '''
-        # Shape: (batch_size * num_spans, max_batch_span_width)
-        group_spans_mask = spans_mask.view(batch_size * num_spans, max_batch_span_width)
-        # Shape: (batch_size * num_spans, 1)
-        valid_spans = (torch.sum(group_spans_mask, dim=-1) >= 1).float()[:, None]
-        group_spans_mask = group_spans_mask + (1. - valid_spans)
-        # Shape: (batch_size * num_spans, embedding_dim)
-        max_pooled_span_emb = util.get_final_encoder_states(spans_tensor, group_spans_mask, True)
-        '''
 
         # self attention on spans representation
         # shape: (batch_size, num_spans, embedding_dim)
@@ -502,11 +436,6 @@ class SpanGate(Seq2SeqEncoder):
                                                                                      aux_input=None,#question_emb,#None
                                                                                      transition_mask=None,
                                                                                      labels=evd_chain_labels)
-        if self._pass_label:
-            all_predictions = evd_chain_labels.long().unsqueeze(1)
-            all_logprobs = torch.zeros_like(all_predictions).float()
-        #print("batch:", batch_size)
-        #print("predict num:", torch.sum((all_predictions > 0).float(), dim=1))
         print("all prediction:", all_predictions)
 
         # The selection order of each sentence. Set to -1 if not being chosen
