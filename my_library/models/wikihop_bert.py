@@ -57,8 +57,8 @@ class BidirectionalAttentionFlow(Model):
 
         question_bert = self._text_field_embedder(question_passage)
         option_bert = self._text_field_embedder(option)
-        question_cls_rep = torch.index_select(question_bert, 1, torch.tensor([0]).cuda())
-        option_cls_rep = torch.index_select(option_bert, 1, torch.tensor([0]).cuda())
+        question_cls_rep = torch.index_select(question_bert, 1, torch.tensor([0]))
+        option_cls_rep = torch.index_select(option_bert, 1, torch.tensor([0]))
         option_cls_rep = option_cls_rep.view(batch_size, option_num, -1)
 
         opt_logits = torch.sum(option_cls_rep * question_cls_rep, dim=-1)
