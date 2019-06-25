@@ -84,7 +84,7 @@ def process_answer_spans(token_spans, token_spans_sp, answer_texts, passage_fiel
 
 
 def make_meta_data(passage_text, passage_offsets, question_tokens, passage_tokens, token_spans_sp, token_spans_sent,
-                   sent_labels, answer_texts, evd_possible_chains, evd_possible_chains_, ans_sent_idxs):
+                   sent_labels, answer_texts, evd_possible_chains, evd_possible_chains_, ans_sent_idxs, article_id):
     # 0 denotes eos, shifts by one
     if ans_sent_idxs is not None:
         ans_sent_idxs = [s_idx + 1 for s_idx in ans_sent_idxs if s_idx < len(sent_labels)]
@@ -93,8 +93,8 @@ def make_meta_data(passage_text, passage_offsets, question_tokens, passage_token
                 'passage_tokens': [token.text for token in passage_tokens],
                 'token_spans_sp': token_spans_sp,
                 'token_spans_sent': token_spans_sent,
-                'sent_labels': sent_labels[:len(token_spans_sent)]}
-
+                'sent_labels': sent_labels[:len(token_spans_sent)],
+                '_id': article_id}
     if answer_texts:
         metadata['answer_texts'] = answer_texts
     if evd_possible_chains is not None:
@@ -116,7 +116,7 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
                                         passage_offsets: List[Tuple] = None,
                                         evd_possible_chains: List[List[int]] = None,
                                         ans_sent_idxs: List[int] = None,
-                                        additional_metadata: Dict[str, Any] = None,
+                                        article_id: str = None,
                                         para_limit: int = 2250) -> Instance:
     """
     Parameters
@@ -171,7 +171,7 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
 
     metadata = make_meta_data(passage_text, passage_offsets, question_tokens, passage_tokens, token_spans_sp,
                               token_spans_sent, sent_labels, answer_texts, evd_possible_chains, evd_possible_chains_,
-                              ans_sent_idxs)
+                              ans_sent_idxs, article_id)
     fields['metadata'] = MetadataField(metadata)
     return Instance(fields)
 
@@ -376,7 +376,7 @@ class HotpotDatasetReader(DatasetReader):
                                                    passage_offsets,
                                                    evd_possible_chains,
                                                    ans_sent_idxs,
-                                                   additional_metadata={'_id': article_id},
+                                                   article_id,
                                                    para_limit=self._para_limit)
 
 
