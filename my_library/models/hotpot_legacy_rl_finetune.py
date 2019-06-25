@@ -416,7 +416,7 @@ class FineTuneRLBidirectionalAttentionFlow(Model):
             print("len rs:", len_rs)
             tot_rs = tot_rs + 0.7 * len_rs
         #rs_baseline = torch.mean(rs)
-        rs_baseline = torch.mean(tot_rs)
+        rs_baseline = 0#torch.mean(tot_rs)
         tot_rs = tot_rs - rs_baseline
         rl_loss = -torch.mean(seq_logprobs * tot_rs)
         if span_start is not None:
