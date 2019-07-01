@@ -28,8 +28,6 @@ class PTNChainBidirectionalAttentionFlow(Model):
                  modeling_layer_sp: Seq2SeqEncoder,
                  span_gate: Seq2SeqEncoder,
                  dropout: float = 0.2,
-                 strict_eos: bool = False,
-                 account_trans: bool = False,
                  output_att_scores: bool = True,
                  regularizer: Optional[RegularizerApplicator] = None) -> None:
 
@@ -43,8 +41,6 @@ class PTNChainBidirectionalAttentionFlow(Model):
 
         self._modeling_layer_sp = modeling_layer_sp
 
-        self._strict_eos = strict_eos
-        self._account_trans = account_trans
         self._output_att_scores = output_att_scores
 
         encoding_dim = phrase_layer_sp.get_output_dim()
@@ -56,18 +52,12 @@ class PTNChainBidirectionalAttentionFlow(Model):
 
         self._f1_metrics = AttF1Measure(0.5, top_k=False)
 
-        self._reward_metric = PerStepInclusion(eos_idx=0)
-
         self._loss_trackers = {'loss': Average(),
                                'rl_loss': Average()}
 
-        if self._span_gate.evd_decoder._train_helper_type == 'teacher_forcing':
-            self._evd_train_type = 'supervised'
-            self.evd_sup_acc_metric = ChainAccuracy()
-            self.evd_ans_metric = Average()
-            self.evd_beam_ans_metric = Average()
-        else:
-            self._evd_train_type = 'rl'
+        self.evd_sup_acc_metric = ChainAccuracy()
+        self.evd_ans_metric = Average()
+        self.evd_beam_ans_metric = Average()
 
     def forward(self,  # type: ignore
                 question: Dict[str, torch.LongTensor],
@@ -78,9 +68,6 @@ class PTNChainBidirectionalAttentionFlow(Model):
                 sent_labels: torch.IntTensor = None,
                 evd_chain_labels: torch.IntTensor = None,
                 q_type: torch.IntTensor = None,
-                sp_mask: torch.IntTensor = None,
-                # dep_mask: torch.IntTensor = None,
-                coref_mask: torch.FloatTensor = None,
                 metadata: List[Dict[str, Any]] = None) -> Dict[str, torch.Tensor]:
 
         # In this model, we only take the first chain in ``evd_chain_labels`` for supervision
@@ -89,21 +76,22 @@ class PTNChainBidirectionalAttentionFlow(Model):
         # In that case, use the mask to ignore those instances
         evd_instance_mask = (evd_chain_labels[:, 0] != 0).float() if not evd_chain_labels is None else None
 
+        # word + char embedding
         embedded_question = self._text_field_embedder(question)
         embedded_passage = self._text_field_embedder(passage)
+        # mask
         ques_mask = util.get_text_field_mask(question).float()
         context_mask = util.get_text_field_mask(passage).float()
 
-        #embedded_question = self._dropout(embedded_question)
-        #embedded_passage = self._dropout(embedded_passage)
-
+        # BiDAF for chain prediction
         ques_output_sp = self._dropout(self._phrase_layer_sp(embedded_question, ques_mask))
         context_output_sp = self._dropout(self._phrase_layer_sp(embedded_passage, context_mask))
-        #ques_output_sp = self._phrase_layer_sp(embedded_question, ques_mask)
-        #context_output_sp = self._phrase_layer_sp(embedded_passage, context_mask)
 
         modeled_passage_sp, _, qc_score_sp = self.qc_att_sp(context_output_sp, ques_output_sp, ques_mask)
+
         modeled_passage_sp = self._modeling_layer_sp(modeled_passage_sp, context_mask)
+
+        # chain prediction
         # Shape(spans_rep): (batch_size * num_spans, max_batch_span_width, embedding_dim)
         # Shape(spans_mask): (batch_size, num_spans, max_batch_span_width)
         spans_rep_sp, spans_mask = convert_sequence_to_spans(modeled_passage_sp, sentence_spans)
@@ -140,7 +128,6 @@ class PTNChainBidirectionalAttentionFlow(Model):
             if not g_att_score is None:
                 output_dict['evd_self_attention_score'] = g_att_score
 
-
         # compute evd rl training metric, rewards, and loss
         print("sent label:")
         for b_label in np.array(sent_labels.cpu()):
@@ -155,35 +142,17 @@ class PTNChainBidirectionalAttentionFlow(Model):
         print("TP:", evd_TP)
         print("NP:", evd_NP)
         print("NT:", evd_NT)
-        per_step_included, per_step_mask, eos_mask = self._reward_metric(all_predictions.unsqueeze(1), sent_labels,
-                                                                         gate_mask,
-                                                                         instance_mask=evd_instance_mask if self.training else None)
-        per_step_included, per_step_mask, eos_mask = per_step_included.squeeze(1), per_step_mask.squeeze(1), eos_mask.squeeze(1)
-        #print("per_step_included:", per_step_included)
-        #print("per_step_mask:", per_step_mask)
-        #print("eos_mask:", eos_mask)
         evd_ps = np.array(evd_TP) / (np.array(evd_NP) + 1e-13)
         evd_rs = np.array(evd_TP) / (np.array(evd_NT) + 1e-13)
         evd_f1s = 2. * ((evd_ps * evd_rs) / (evd_ps + evd_rs + 1e-13))
-        #print("evd_f1s:", evd_f1s)
-        if self._evd_train_type == 'supervised':
-            predict_mask = get_evd_prediction_mask(all_predictions.unsqueeze(1), eos_idx=0)[0]
-            gold_mask = get_evd_prediction_mask(evd_chain_labels, eos_idx=0)[0]
-            # default to take multiple predicted chains, so unsqueeze dim 1
-            self.evd_sup_acc_metric(predictions=all_predictions.unsqueeze(1), gold_labels=evd_chain_labels,
-                                    predict_mask=predict_mask, gold_mask=gold_mask, instance_mask=evd_instance_mask)
-            print("gold chain:", evd_chain_labels)
-        if self._evd_train_type == 'rl':
-            # RL Loss equals ``-log(P) * (R - baseline)``
-            # Shape: (batch_size, num_decoding_steps)
-            per_step_rs = Evd_Reward(per_step_included, per_step_mask, eos_mask, evd_rs, evd_f1s,
-                                     strict_eos=self._strict_eos, account_trans=self._account_trans)
-            per_step_rs = per_step_rs.to(all_logprobs.device)
-            #print("per_step_rs:", per_step_rs)
-            rl_loss = -torch.mean(torch.sum(all_logprobs * per_step_rs, dim=1))
-        elif self._evd_train_type == 'supervised':
-            per_step_mask = per_step_mask.to(all_logprobs.device)
-            rl_loss = -torch.mean(torch.sum(all_logprobs * per_step_mask * evd_instance_mask[:, None], dim=1))
+        predict_mask = get_evd_prediction_mask(all_predictions.unsqueeze(1), eos_idx=0)[0]
+        gold_mask = get_evd_prediction_mask(evd_chain_labels, eos_idx=0)[0]
+        # default to take multiple predicted chains, so unsqueeze dim 1
+        self.evd_sup_acc_metric(predictions=all_predictions.unsqueeze(1), gold_labels=evd_chain_labels,
+                                predict_mask=predict_mask, gold_mask=gold_mask, instance_mask=evd_instance_mask)
+        print("gold chain:", evd_chain_labels)
+        predict_mask = predict_mask.float().squeeze(1)
+        rl_loss = -torch.mean(torch.sum(all_logprobs * predict_mask * evd_instance_mask[:, None], dim=1))
 
         # Compute the EM and F1 on SQuAD and add the tokenized input to the output.
         # Compute before loss for rl
@@ -194,7 +163,6 @@ class PTNChainBidirectionalAttentionFlow(Model):
             token_spans_sp = []
             token_spans_sent = []
             sent_labels_list = []
-            coref_clusters = []
             evd_possible_chains = []
             ans_sent_idxs = []
             pred_chains_include_ans = []
@@ -206,7 +174,6 @@ class PTNChainBidirectionalAttentionFlow(Model):
                 token_spans_sp.append(metadata[i]['token_spans_sp'])
                 token_spans_sent.append(metadata[i]['token_spans_sent'])
                 sent_labels_list.append(metadata[i]['sent_labels'])
-                coref_clusters.append(metadata[i]['coref_clusters'])
                 ids.append(metadata[i]['_id'])
                 passage_str = metadata[i]['original_passage']
                 offsets = metadata[i]['token_offsets']
@@ -238,7 +205,6 @@ class PTNChainBidirectionalAttentionFlow(Model):
             output_dict['token_spans_sp'] = token_spans_sp
             output_dict['token_spans_sent'] = token_spans_sent
             output_dict['sent_labels'] = sent_labels_list
-            output_dict['coref_clusters'] = coref_clusters
             output_dict['evd_possible_chains'] = evd_possible_chains
             output_dict['ans_sent_idxs'] = ans_sent_idxs
             output_dict['pred_chains_include_ans'] = pred_chains_include_ans
@@ -249,27 +215,22 @@ class PTNChainBidirectionalAttentionFlow(Model):
         if span_start is not None:
             try:
                 loss = rl_loss
-                #print('start_loss:{} end_loss:{} type_loss:{}'.format(start_loss,end_loss,type_loss))
                 self._loss_trackers['loss'](loss)
                 self._loss_trackers['rl_loss'](rl_loss)
                 output_dict["loss"] = loss
-
             except RuntimeError:
                 print('\n meta_data:', metadata)
                 print(output_dict['_id'])
-                print(loss)
                 print(span_start_logits.shape)
 
         return output_dict
 
     def get_metrics(self, reset: bool = False) -> Dict[str, float]:
         p, r, evidence_f1_socre = self._f1_metrics.get_metric(reset)
-        p_ = self._reward_metric.get_metric(reset)
         ans_in_evd = self.evd_ans_metric.get_metric(reset)
         beam_ans_in_evd = self.evd_beam_ans_metric.get_metric(reset)
         metrics = {
                 'evd_p': p,
-                'evd_p_': p_,
                 'evd_r': r,
                 'evd_f1': evidence_f1_socre,
                 'ans_in_evd': ans_in_evd,
@@ -277,9 +238,8 @@ class PTNChainBidirectionalAttentionFlow(Model):
                 }
         for name, tracker in self._loss_trackers.items():
             metrics[name] = tracker.get_metric(reset).item()
-        if self._evd_train_type == 'supervised':
-            evd_sup_acc = self.evd_sup_acc_metric.get_metric(reset)
-            metrics['evd_sup_acc'] = evd_sup_acc
+        evd_sup_acc = self.evd_sup_acc_metric.get_metric(reset)
+        metrics['evd_sup_acc'] = evd_sup_acc
         return metrics
 
     @staticmethod

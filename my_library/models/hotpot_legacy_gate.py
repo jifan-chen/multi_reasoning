@@ -69,9 +69,6 @@ class GateBidirectionalAttentionFlow(Model):
                 sent_labels: torch.IntTensor = None,
                 evd_chain_labels: torch.IntTensor = None,
                 q_type: torch.IntTensor = None,
-                sp_mask: torch.IntTensor = None,
-                # dep_mask: torch.IntTensor = None,
-                coref_mask: torch.FloatTensor = None,
                 metadata: List[Dict[str, Any]] = None) -> Dict[str, torch.Tensor]:
 
         if self._sent_labels_src == 'chain':
@@ -92,21 +89,22 @@ class GateBidirectionalAttentionFlow(Model):
             # make the padding be -1
             sent_labels = sent_labels * sent_labels_mask + -1. * (1 - sent_labels_mask)
 
+        # word + char embedding
         embedded_question = self._text_field_embedder(question)
         embedded_passage = self._text_field_embedder(passage)
+        # mask
         ques_mask = util.get_text_field_mask(question).float()
         context_mask = util.get_text_field_mask(passage).float()
 
-        #embedded_question = self._dropout(embedded_question)
-        #embedded_passage = self._dropout(embedded_passage)
-
+        # BiDAF for gate prediction
         ques_output_sp = self._dropout(self._phrase_layer_sp(embedded_question, ques_mask))
         context_output_sp = self._dropout(self._phrase_layer_sp(embedded_passage, context_mask))
-        #ques_output_sp = self._phrase_layer_sp(embedded_question, ques_mask)
-        #context_output_sp = self._phrase_layer_sp(embedded_passage, context_mask)
 
         modeled_passage_sp, _, qc_score_sp = self.qc_att_sp(context_output_sp, ques_output_sp, ques_mask)
+
         modeled_passage_sp = self._modeling_layer_sp(modeled_passage_sp, context_mask)
+
+        # gate prediction
         # Shape(spans_rep): (batch_size * num_spans, max_batch_span_width, embedding_dim)
         # Shape(spans_mask): (batch_size, num_spans, max_batch_span_width)
         spans_rep_sp, spans_mask = convert_sequence_to_spans(modeled_passage_sp, sentence_spans)
@@ -139,11 +137,9 @@ class GateBidirectionalAttentionFlow(Model):
         if span_start is not None:
             try:
                 loss = strong_sup_loss
-                #print('start_loss:{} end_loss:{} type_loss:{}'.format(start_loss,end_loss,type_loss))
                 self._loss_trackers['loss'](loss)
                 self._loss_trackers['strong_sup_loss'](strong_sup_loss)
                 output_dict["loss"] = loss
-
             except RuntimeError:
                 print('\n meta_data:', metadata)
                 print(span_start_logits.shape)
@@ -161,7 +157,6 @@ class GateBidirectionalAttentionFlow(Model):
             token_spans_sp = []
             token_spans_sent = []
             sent_labels_list = []
-            coref_clusters = []
             evd_possible_chains = []
             ans_sent_idxs = []
             ids = []
@@ -171,7 +166,6 @@ class GateBidirectionalAttentionFlow(Model):
                 token_spans_sp.append(metadata[i]['token_spans_sp'])
                 token_spans_sent.append(metadata[i]['token_spans_sent'])
                 sent_labels_list.append(metadata[i]['sent_labels'])
-                coref_clusters.append(metadata[i]['coref_clusters'])
                 ids.append(metadata[i]['_id'])
                 passage_str = metadata[i]['original_passage']
                 offsets = metadata[i]['token_offsets']
@@ -187,7 +181,6 @@ class GateBidirectionalAttentionFlow(Model):
             output_dict['token_spans_sp'] = token_spans_sp
             output_dict['token_spans_sent'] = token_spans_sent
             output_dict['sent_labels'] = sent_labels_list
-            output_dict['coref_clusters'] = coref_clusters
             output_dict['evd_possible_chains'] = evd_possible_chains
             output_dict['ans_sent_idxs'] = ans_sent_idxs
             output_dict['_id'] = ids
