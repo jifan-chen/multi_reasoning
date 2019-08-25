@@ -2,9 +2,9 @@
   "dataset_reader": {
       "type": "multiprocess",
       "base_reader" : {
-          "type": "hotpot_reader",
+          "type": "wikihop_reader",
           "lazy": true,
-          "para_limit": 2250,
+          "para_limit": 3200,
           "filter_compare_q": false,
           "token_indexers": {
             "tokens": {
@@ -27,36 +27,44 @@
   "datasets_for_vocab_creation": [],
 
   "vocabulary": {
-    "directory_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/vocabulary/",
+    "directory_path": "/scratch/cluster/jfchen/jason/multihopQA/wikihop/vocabulary/",
     "extend": false
     },
 
   "validation_dataset_reader": {
-    "type": "hotpot_reader",
-    "lazy": false,
-    "para_limit": 2250,
-    "filter_compare_q": false,
-    "token_indexers": {
-      "tokens": {
-        "type": "single_id",
-        "lowercase_tokens": false
+      "type": "multiprocess",
+      "base_reader" : {
+        "type": "wikihop_reader",
+        "lazy": false,
+        "para_limit": 3200,
+        "filter_compare_q": false,
+        "token_indexers": {
+          "tokens": {
+            "type": "single_id",
+            "lowercase_tokens": false
+          },
+          "token_characters": {
+            "type": "characters",
+            "character_tokenizer": {
+              "byte_encoding": "utf-8"
+            },
+            "min_padding_length": 5
+          }
+        }
       },
-      "token_characters": {
-        "type": "characters",
-        "character_tokenizer": {
-          "byte_encoding": "utf-8"
-        },
-        "min_padding_length": 5
-      }
-    }
+      "num_workers": 2,
+      "output_queue_size": 500
   },
 
-  "train_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/train_chain/train*.json",
-  //"train_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/train_chain_2fold/fold1/train*.json",
-  "validation_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_chain.json",
+  "train_data_path": "/scratch/cluster/jfchen/jason/multihopQA/wikihop/train_chain_2fold/fold0/train*.json",
+  "validation_data_path": "/scratch/cluster/jfchen/jason/multihopQA/wikihop/dev/dev_chain.json",
 
   "model": {
     "type": "hotpot_legacy_ptn_chain",
+
+    "strict_eos": false,
+
+    "account_trans": false,
 
     "text_field_embedder": {
       "token_embedders": {
@@ -145,7 +153,7 @@
         ]
       ],
       "max_instances_in_memory": 500,
-      "batch_size": 10,
+      "batch_size": 8,
       "maximum_samples_per_batch": ["passage", 15000]
     },
     "num_workers": 4,
@@ -153,14 +161,19 @@
   },
 
   "validation_iterator": {
-    "type": "bucket",
-    "sorting_keys": [
-      [
-        "passage",
-        "num_tokens"
-      ]
-    ],
-    "batch_size": 8
+    "type": "multiprocess",
+    "base_iterator": {
+      "type": "bucket",
+      "sorting_keys": [
+        [
+          "passage",
+          "num_tokens"
+        ]
+      ],
+      "batch_size": 8
+    },
+    "num_workers": 4,
+    "output_queue_size": 50
   },
 
   "trainer": {
@@ -170,13 +183,15 @@
     "validation_metric": "+evd_f1",
     "cuda_device": 0,
     "learning_rate_scheduler": {
-      "type": "noam",
-      "model_size": 100,
-      "warmup_steps": 10000
+      "type": "reduce_on_plateau",
+      "factor": 0.5,
+      "mode": "max",
+      "patience": 1
     },
 
     "optimizer": {
-      "type": "adam"
+      "type": "adam",
+      "lr": 0.0005
     }
   }
 

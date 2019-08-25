@@ -7,17 +7,16 @@
           "para_limit": 2250,
           "filter_compare_q": false,
           "token_indexers": {
-            "tokens": {
-              "type": "single_id",
-              "lowercase_tokens": false
-            },
-            "token_characters": {
-              "type": "characters",
-              "character_tokenizer": {
-                "byte_encoding": "utf-8"
-              },
-              "min_padding_length": 5
+            "elmo": {
+              "type": "elmo_characters"
             }
+            //"token_characters": {
+            //  "type": "characters",
+            //  "character_tokenizer": {
+            //    "byte_encoding": "utf-8"
+            //  },
+            //  "min_padding_length": 5
+            //}
           }
       },
       "num_workers": 2,
@@ -37,17 +36,16 @@
     "para_limit": 2250,
     "filter_compare_q": false,
     "token_indexers": {
-      "tokens": {
-        "type": "single_id",
-        "lowercase_tokens": false
-      },
-      "token_characters": {
-        "type": "characters",
-        "character_tokenizer": {
-          "byte_encoding": "utf-8"
-        },
-        "min_padding_length": 5
+      "elmo": {
+        "type": "elmo_characters"
       }
+      //"token_characters": {
+      //  "type": "characters",
+      //  "character_tokenizer": {
+      //    "byte_encoding": "utf-8"
+      //  },
+      //  "min_padding_length": 5
+      //}
     }
   },
 
@@ -58,28 +56,34 @@
   "model": {
     "type": "hotpot_legacy_ptn_chain",
 
+    "strict_eos": false,
+
+    "account_trans": false,
+
     "text_field_embedder": {
       "token_embedders": {
-        "tokens": {
-          "type": "embedding",
-          "pretrained_file": "/scratch/cluster/jfchen/jfchen/data/word_emb/glove.840B.300d.txt",
-          "embedding_dim": 300,
-          "trainable": false
-        },
-        "token_characters": {
-                "type": "character_encoding",
-                "embedding": {
-                "num_embeddings": 262,
-                "embedding_dim": 8
-                },
-                "encoder": {
-                "type": "cnn",
-                "embedding_dim": 8,
-                "num_filters": 100,
-                "ngram_filter_sizes": [5]
-                },
-                "dropout": 0.0
-            }
+        "elmo": {
+          "type": "elmo_token_embedder",
+          "do_layer_norm": false,
+          "dropout": 0.4,
+          "projection_dim": 400,
+          "options_file": "https://s3-us-west-2.amazonaws.com/allennlp/models/elmo/2x4096_512_2048cnn_2xhighway_5.5B/elmo_2x4096_512_2048cnn_2xhighway_5.5B_options.json",
+          "weight_file": "https://s3-us-west-2.amazonaws.com/allennlp/models/elmo/2x4096_512_2048cnn_2xhighway_5.5B/elmo_2x4096_512_2048cnn_2xhighway_5.5B_weights.hdf5"
+        }
+        //"token_characters": {
+        //  "type": "character_encoding",
+        //  "embedding": {
+        //    "num_embeddings": 262,
+        //    "embedding_dim": 8
+        //  },
+        //  "encoder": {
+        //    "type": "cnn",
+        //    "embedding_dim": 8,
+        //    "num_filters": 100,
+        //    "ngram_filter_sizes": [5]
+        //  },
+        //  "dropout": 0.0
+        //}
       }
     },
 
@@ -110,13 +114,13 @@
       "input_dim": 200,
       "attention_dim": 200,
       "values_dim": 200,
-      "attention_dropout_prob": 0.2
+      "attention_dropout_prob": 0.1
     },
 
     "phrase_layer_sp": {
       "type": "gru",
       "bidirectional": true,
-      "input_size": 400,
+      "input_size": 400, // 400
       "hidden_size": 100,
       "num_layers": 1,
       "dropout": 0.0
@@ -131,7 +135,7 @@
       "dropout": 0.0
     },
 
-    "dropout": 0.2
+    "dropout": 0.1
   },
 
   "iterator": {
@@ -145,7 +149,7 @@
         ]
       ],
       "max_instances_in_memory": 500,
-      "batch_size": 10,
+      "batch_size": 5,
       "maximum_samples_per_batch": ["passage", 15000]
     },
     "num_workers": 4,
@@ -160,7 +164,7 @@
         "num_tokens"
       ]
     ],
-    "batch_size": 8
+    "batch_size": 5
   },
 
   "trainer": {
@@ -168,7 +172,7 @@
     "num_epochs": 20,
     "patience": 10,
     "validation_metric": "+evd_f1",
-    "cuda_device": 0,
+    "cuda_device": [0,1,2,3],
     "learning_rate_scheduler": {
       "type": "noam",
       "model_size": 100,

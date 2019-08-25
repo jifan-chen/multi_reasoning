@@ -62,10 +62,6 @@
   "model": {
     "type": "hotpot_legacy_ptn_chain",
 
-    "strict_eos": false,
-
-    "account_trans": false,
-
     "text_field_embedder": {
       "token_embedders": {
         "tokens": {

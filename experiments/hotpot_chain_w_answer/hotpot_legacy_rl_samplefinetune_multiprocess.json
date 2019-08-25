@@ -56,7 +56,15 @@
   "validation_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_chain.json",
 
   "model": {
-    "type": "hotpot_legacy_ptn_chain",
+    "type": "hotpot_legacy_rl_finetune",
+
+    "weights_file": "save/noam_beam5_teacherforcing_rl_evd_biatt_full_alldrop0.2/best.th",
+
+    "strong_sup": false,
+
+    "strict_eos": false,
+
+    "account_trans": false,
 
     "text_field_embedder": {
       "token_embedders": {
@@ -83,13 +91,19 @@
       }
     },
 
+    "self_attention_layer":{
+      "type": "bi_attention",
+      "input_size": 200,
+      "dropout": 0.0
+    },
+
     "span_gate": {
       "type": "span_gate",
       "span_dim": 200,
       "max_decoding_steps": 5,
       "predict_eos": true,
       "cell": "lstm",
-      "train_helper": "teacher_forcing",
+      "train_helper": "sample",
       "val_helper": "beamsearch",
       "beam_size": 5,
       "pass_label": false
@@ -113,6 +127,15 @@
       "attention_dropout_prob": 0.2
     },
 
+    "phrase_layer": {
+      "type": "gru",
+      "bidirectional": true,
+      "input_size": 400,
+      "hidden_size": 100,
+      "num_layers": 1,
+      "dropout": 0.0
+    },
+
     "phrase_layer_sp": {
       "type": "gru",
       "bidirectional": true,
@@ -122,10 +145,46 @@
       "dropout": 0.0
     },
 
+    "modeling_layer": {
+      "type": "gru",
+      "bidirectional": true,
+      "input_size": 200,
+      "hidden_size": 100,
+      "num_layers": 1,
+      "dropout": 0.0
+    },
+
     "modeling_layer_sp": {
       "type": "gru",
       "bidirectional": true,
       "input_size": 200,
+      "hidden_size": 100,
+      "num_layers": 1,
+      "dropout": 0.0
+    },
+
+    "span_start_encoder": {
+      "type": "gru",
+      "bidirectional": true,
+      "input_size": 200,
+      "hidden_size": 100,
+      "num_layers": 1,
+      "dropout": 0.0
+    },
+
+    "span_end_encoder": {
+      "type": "gru",
+      "bidirectional": true,
+      "input_size": 400,
+      "hidden_size": 100,
+      "num_layers": 1,
+      "dropout": 0.0
+    },
+
+    "type_encoder": {
+      "type": "gru",
+      "bidirectional": true,
+      "input_size": 400,
       "hidden_size": 100,
       "num_layers": 1,
       "dropout": 0.0
@@ -160,7 +219,7 @@
         "num_tokens"
       ]
     ],
-    "batch_size": 8
+    "batch_size": 3
   },
 
   "trainer": {
@@ -170,13 +229,15 @@
     "validation_metric": "+evd_f1",
     "cuda_device": 0,
     "learning_rate_scheduler": {
-      "type": "noam",
-      "model_size": 100,
-      "warmup_steps": 10000
+      "type": "reduce_on_plateau",
+      "factor": 0.5,
+      "mode": "max",
+      "patience": 1
     },
 
     "optimizer": {
-      "type": "adam"
+      "type": "adam",
+      "lr": 0.0001
     }
   }
 

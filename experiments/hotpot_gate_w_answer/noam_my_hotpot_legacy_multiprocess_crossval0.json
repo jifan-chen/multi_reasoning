@@ -56,8 +56,6 @@
   "model": {
     "type": "hotpot_legacy",
 
-    "strong_sup": false,
-
     "sent_labels_src": "chain",
 
     "text_field_embedder": {
@@ -90,14 +88,6 @@
       "input_size": 200,
       "dropout": 0.2
     },
-    //"self_attention_layer":{
-    //  "type": "multi_head_self_attention_with_sup",
-    //  "num_heads": 2,
-    //  "input_dim": 200,
-    //  "attention_dim": 200,
-    //  "values_dim": 200,
-    //  "attention_dropout_prob": 0.0
-    //},
 
     "gate_sent_encoder": {
       "type": "gru",

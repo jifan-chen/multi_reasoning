@@ -5,7 +5,6 @@
           "type": "hotpot_reader",
           "lazy": true,
           "para_limit": 2250,
-          "filter_compare_q": false,
           "token_indexers": {
             "tokens": {
               "type": "single_id",
@@ -35,7 +34,6 @@
     "type": "hotpot_reader",
     "lazy": false,
     "para_limit": 2250,
-    "filter_compare_q": false,
     "token_indexers": {
       "tokens": {
         "type": "single_id",
@@ -51,12 +49,16 @@
     }
   },
 
-  "train_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/train_chain/train*.json",
-  //"train_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/train_chain_2fold/fold1/train*.json",
+
+  "train_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/train_chain_2fold/fold1/train*.json",
   "validation_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_chain.json",
 
   "model": {
-    "type": "hotpot_legacy_ptn_chain",
+    "type": "hotpot_legacy_gate",
+
+    "sent_labels_src": "sp",
+
+    "gate_self_att": false,
 
     "text_field_embedder": {
       "token_embedders": {
@@ -81,18 +83,6 @@
                 "dropout": 0.0
             }
       }
-    },
-
-    "span_gate": {
-      "type": "span_gate",
-      "span_dim": 200,
-      "max_decoding_steps": 5,
-      "predict_eos": true,
-      "cell": "lstm",
-      "train_helper": "teacher_forcing",
-      "val_helper": "beamsearch",
-      "beam_size": 5,
-      "pass_label": false
     },
 
     "gate_sent_encoder": {
@@ -160,7 +150,7 @@
         "num_tokens"
       ]
     ],
-    "batch_size": 8
+    "batch_size": 3
   },
 
   "trainer": {

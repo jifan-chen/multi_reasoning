@@ -52,11 +52,10 @@
   },
 
   "train_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/train_chain/train*.json",
-  //"train_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/train_chain_2fold/fold1/train*.json",
   "validation_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_chain.json",
 
   "model": {
-    "type": "hotpot_legacy_ptn_chain",
+    "type": "hotpot_decouple_ptn_chain",
 
     "text_field_embedder": {
       "token_embedders": {
