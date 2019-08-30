@@ -5,7 +5,6 @@
           "type": "hotpot_reader",
           "lazy": true,
           "para_limit": 2250,
-          "filter_compare_q": false,
           "token_indexers": {
             "tokens": {
               "type": "single_id",
@@ -35,7 +34,6 @@
     "type": "hotpot_reader",
     "lazy": false,
     "para_limit": 2250,
-    "filter_compare_q": false,
     "token_indexers": {
       "tokens": {
         "type": "single_id",
@@ -51,18 +49,16 @@
     }
   },
 
-  "train_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/train_chain/train*.json",
-  //"train_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/train_chain_2fold/fold1/train*.json",
+
+  "train_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/train_chain_2fold/fold1/train*.json",
   "validation_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_chain.json",
 
   "model": {
-    "type": "hotpot_legacy_rl",
+    "type": "hotpot_legacy_gate",
 
-    "strong_sup": false,
+    "sent_labels_src": "chain",
 
-    "strict_eos": false,
-
-    "account_trans": false,
+    "gate_self_att": false,
 
     "text_field_embedder": {
       "token_embedders": {
@@ -89,24 +85,6 @@
       }
     },
 
-    "self_attention_layer":{
-      "type": "bi_attention",
-      "input_size": 200,
-      "dropout": 0.1
-    },
-
-    "span_gate": {
-      "type": "span_gate",
-      "span_dim": 200,
-      "max_decoding_steps": 5,
-      "predict_eos": true,
-      "cell": "lstm",
-      "train_helper": "teacher_forcing",
-      "val_helper": "beamsearch",
-      "beam_size": 5,
-      "pass_label": false
-    },
-
     "gate_sent_encoder": {
       "type": "gru",
       "bidirectional": true,
@@ -122,31 +100,13 @@
       "input_dim": 200,
       "attention_dim": 200,
       "values_dim": 200,
-      "attention_dropout_prob": 0.1
-    },
-
-    "phrase_layer": {
-      "type": "gru",
-      "bidirectional": true,
-      "input_size": 400,
-      "hidden_size": 100,
-      "num_layers": 1,
-      "dropout": 0.0
+      "attention_dropout_prob": 0.2
     },
 
     "phrase_layer_sp": {
       "type": "gru",
       "bidirectional": true,
       "input_size": 400,
-      "hidden_size": 100,
-      "num_layers": 1,
-      "dropout": 0.0
-    },
-
-    "modeling_layer": {
-      "type": "gru",
-      "bidirectional": true,
-      "input_size": 200,
       "hidden_size": 100,
       "num_layers": 1,
       "dropout": 0.0
@@ -161,34 +121,7 @@
       "dropout": 0.0
     },
 
-    "span_start_encoder": {
-      "type": "gru",
-      "bidirectional": true,
-      "input_size": 200,
-      "hidden_size": 100,
-      "num_layers": 1,
-      "dropout": 0.0
-    },
-
-    "span_end_encoder": {
-      "type": "gru",
-      "bidirectional": true,
-      "input_size": 400,
-      "hidden_size": 100,
-      "num_layers": 1,
-      "dropout": 0.0
-    },
-
-    "type_encoder": {
-      "type": "gru",
-      "bidirectional": true,
-      "input_size": 400,
-      "hidden_size": 100,
-      "num_layers": 1,
-      "dropout": 0.0
-    },
-
-    "dropout": 0.1
+    "dropout": 0.2
   },
 
   "iterator": {
@@ -224,7 +157,7 @@
     "num_serialized_models_to_keep": 1,
     "num_epochs": 20,
     "patience": 10,
-    "validation_metric": "+em",
+    "validation_metric": "+evd_f1",
     "cuda_device": 0,
     "learning_rate_scheduler": {
       "type": "noam",

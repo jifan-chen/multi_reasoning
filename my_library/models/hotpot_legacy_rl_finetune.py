@@ -219,7 +219,6 @@ class FineTuneRLBidirectionalAttentionFlow(Model):
             if not g_att_score is None:
                 output_dict['evd_self_attention_score'] = g_att_score
 
-
         # compute evd rl training metric, rewards, and loss
         print("sent label:")
         for b_label in np.array(sent_labels.cpu()):
@@ -373,16 +372,15 @@ class FineTuneRLBidirectionalAttentionFlow(Model):
         tot_rs = tot_rs - rs_baseline
         rl_loss = -torch.mean(seq_logprobs * tot_rs)
         if span_start is not None:
-            #try:
-            loss = rl_loss
-            #print('start_loss:{} end_loss:{} type_loss:{}'.format(start_loss,end_loss,type_loss))
-            self._loss_trackers['loss'](loss)
-            self._loss_trackers['rl_loss'](rl_loss)
-            output_dict["loss"] = loss
-
-            #except RuntimeError:
-            #    print('\n meta_data:', metadata)
-            #    print(span_start_logits.shape)
+            try:
+                loss = rl_loss
+                self._loss_trackers['loss'](loss)
+                self._loss_trackers['rl_loss'](rl_loss)
+                output_dict["loss"] = loss
+            except RuntimeError:
+                print('\n meta_data:', metadata)
+                print(output_dict['_id'])
+                print(span_start_logits.shape)
 
         return output_dict
 

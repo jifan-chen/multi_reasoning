@@ -93,7 +93,7 @@ def make_meta_data(passage_text, passage_offsets, question_tokens, passage_token
                 'passage_tokens': [token.text for token in passage_tokens],
                 'token_spans_sp': token_spans_sp,
                 'token_spans_sent': token_spans_sent,
-                'sent_labels': sent_labels[:len(token_spans_sent)],
+                'sent_labels': sent_labels,
                 '_id': article_id}
     if answer_texts:
         metadata['answer_texts'] = answer_texts
@@ -166,6 +166,7 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
     # filter spans that exceed para limit so that the info in metadata is correct
     token_spans_sent = [(s, e if e < limit else limit - 1) for s, e in token_spans_sent if s < limit]
     token_spans_sp = [(s, e if e < limit else limit - 1) for s, e in token_spans_sp if s < limit]
+    sent_labels = sent_labels[:len(token_spans_sent)]
     process_answer_spans(token_spans, token_spans_sp, answer_texts, passage_field, para_limit, fields)
     evd_possible_chains_ = process_evidence_chains(evd_possible_chains, sent_labels_, fields)
 

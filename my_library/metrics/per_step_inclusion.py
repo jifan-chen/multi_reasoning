@@ -8,7 +8,6 @@ from allennlp.common.checks import ConfigurationError
 from allennlp.nn.util import get_range_vector, get_device_of
 
 
-
 ## Some Per-Step Reward functions ##
 def Evd_Reward(per_step_included, per_step_mask, eos_mask, evd_rclls, evd_f1s,
                strict_eos=False, account_trans=False):

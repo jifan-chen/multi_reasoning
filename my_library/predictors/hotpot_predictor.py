@@ -10,7 +10,6 @@ import numpy as np
 import torch
 
 
-
 def order2chain(order):
     chain = []
     for s_idx, o in enumerate(order):
@@ -49,11 +48,7 @@ class HotpotPredictor(Predictor):
             pred_chains = [order2chain(order) for order in pred_sent_orders]
         else:
             # get pred evdiences from sentences with top k ``gate_prob``
-            '''
-            pred_sent_labels = output['pred_sent_labels'][:num_sents] # maybe just from gate? (prob >= th)
-            pred_chains = [[s_idx for s_idx in range(num_sents) if pred_sent_labels[s_idx] == 1]]
-            '''
-            num_sents = len(output['sent_labels'])
+            num_sents = len(output['sent_labels']) # for removing padding
             gate_probs = output['gate_probs'][:num_sents]
             pred_chains = [[i] for i in sorted(range(num_sents), key=lambda x: gate_probs[x], reverse=True)[:10]]
         return {'answer_texts': output['answer_texts'],

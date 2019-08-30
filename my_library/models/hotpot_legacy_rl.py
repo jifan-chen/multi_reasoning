@@ -194,7 +194,6 @@ class RLBidirectionalAttentionFlow(Model):
             if not g_att_score is None:
                 output_dict['evd_self_attention_score'] = g_att_score
 
-
         # compute evd rl training metric, rewards, and loss
         print("sent label:")
         for b_label in np.array(sent_labels.cpu()):
@@ -212,7 +211,6 @@ class RLBidirectionalAttentionFlow(Model):
         evd_ps = np.array(evd_TP) / (np.array(evd_NP) + 1e-13)
         evd_rs = np.array(evd_TP) / (np.array(evd_NT) + 1e-13)
         evd_f1s = 2. * ((evd_ps * evd_rs) / (evd_ps + evd_rs + 1e-13))
-        #print("evd_f1s:", evd_f1s)
         predict_mask = get_evd_prediction_mask(all_predictions.unsqueeze(1), eos_idx=0)[0]
         gold_mask = get_evd_prediction_mask(evd_chain_labels, eos_idx=0)[0]
         # ChainAccuracy defaults to take multiple predicted chains, so unsqueeze dim 1
@@ -304,25 +302,21 @@ class RLBidirectionalAttentionFlow(Model):
 
         # Compute the loss for training.
         if span_start is not None:
-            #try:
-            start_loss = nll_loss(util.masked_log_softmax(span_start_logits, None), span_start.squeeze(-1))
-            # self._span_start_accuracy(span_start_logits, span_start.squeeze(-1))
-            end_loss = nll_loss(util.masked_log_softmax(span_end_logits, None), span_end.squeeze(-1))
-            # self._span_end_accuracy(span_end_logits, span_end.squeeze(-1))
-            # self._span_accuracy(best_span, torch.stack([span_start, span_end], -1))
-            type_loss = nll_loss(util.masked_log_softmax(predict_type, None), q_type)
-            loss = start_loss + end_loss + type_loss + rl_loss
-            #print('start_loss:{} end_loss:{} type_loss:{}'.format(start_loss,end_loss,type_loss))
-            self._loss_trackers['loss'](loss)
-            self._loss_trackers['start_loss'](start_loss)
-            self._loss_trackers['end_loss'](end_loss)
-            self._loss_trackers['type_loss'](type_loss)
-            self._loss_trackers['rl_loss'](rl_loss)
-            output_dict["loss"] = loss
-
-            #except RuntimeError:
-            #    print('\n meta_data:', metadata)
-            #    print(span_start_logits.shape)
+            try:
+                start_loss = nll_loss(util.masked_log_softmax(span_start_logits, None), span_start.squeeze(-1))
+                end_loss = nll_loss(util.masked_log_softmax(span_end_logits, None), span_end.squeeze(-1))
+                type_loss = nll_loss(util.masked_log_softmax(predict_type, None), q_type)
+                loss = start_loss + end_loss + type_loss + rl_loss
+                self._loss_trackers['loss'](loss)
+                self._loss_trackers['start_loss'](start_loss)
+                self._loss_trackers['end_loss'](end_loss)
+                self._loss_trackers['type_loss'](type_loss)
+                self._loss_trackers['rl_loss'](rl_loss)
+                output_dict["loss"] = loss
+            except RuntimeError:
+                print('\n meta_data:', metadata)
+                print(output_dict['_id'])
+                print(span_start_logits.shape)
 
         return output_dict
 
