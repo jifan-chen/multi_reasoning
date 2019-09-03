@@ -2,12 +2,13 @@
   "dataset_reader": {
       "type": "multiprocess",
       "base_reader" : {
-          "type": "hotpot_reader_bert",
+          "type": "hotpot_reader_bert_flat",
           "lazy": true,
-          "para_limit": 1000,
+          "para_limit": 2000,
           "filter_compare_q": false,
           "token_indexers": {
             "bert": {
+                "max_pieces": 64,
                 "type": "bert-pretrained",
                 "pretrained_model": "bert-base-uncased",
                 "do_lowercase": true,
@@ -35,12 +36,13 @@
   },
 
   "validation_dataset_reader": {
-    "type": "hotpot_reader_bert",
+    "type": "hotpot_reader_bert_flat",
     "lazy": true,
-    "para_limit": 1000,
+    "para_limit": 2000,
     "filter_compare_q": false,
     "token_indexers": {
       "bert": {
+          "max_pieces": 64,
           "type": "bert-pretrained",
           "pretrained_model": "bert-base-uncased",
           "do_lowercase": true,
@@ -57,9 +59,9 @@
     }
   },
 
-  "train_data_path": "/scratch/cluster/j0717lin/data/hotpot/train_chain/train0.json",
+  "train_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/train_chain/train*.json",
   //"train_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/train_chain_2fold/fold1/train*.json",
-  "validation_data_path": "/scratch/cluster/j0717lin/data/hotpot/dev/dev_distractor_chain.json",
+  "validation_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_chain.json",
 
   "model": {
     "type": "hotpot_bert_chainex_wo_ans",
@@ -72,9 +74,10 @@
       },
       "token_embedders": {
         "bert": {
-            "type": "bert-pretrained",
+            "type": "my-bert-pretrained",
             "requires_grad": true,
-            "pretrained_model": "bert-base-uncased"
+            "pretrained_model": "bert-base-uncased",
+            "max_pieces": 64
         },
 //        "token_characters": {
 //                "type": "character_encoding",
@@ -100,6 +103,7 @@
         "activations": "relu",
         "dropout": 0.1
     },
+
 
     "span_gate": {
       "type": "span_gate",
@@ -138,10 +142,11 @@
     "type": "multiprocess",
     "base_iterator": {
       "type": "bucket",
+      "biggest_batch_first": true,
       "sorting_keys": [
         [
           "passage",
-          "list_num_tokens"
+          "num_tokens"
         ]
       ],
       "max_instances_in_memory": 10,
