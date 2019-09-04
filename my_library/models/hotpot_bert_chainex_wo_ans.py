@@ -76,22 +76,16 @@ class PTNChainBidirectionalAttentionFlow(Model):
         # bert embedding for answer prediction
         # shape: [batch_size, max_q_len, emb_size]
         embedded_question = self._text_field_embedder(question)
-        # shape: [batch_size, max_passage_len, embedding_dim]
+        # shape: [batch_size, num_sent, max_sent_len+q_len, embedding_dim]
         embedded_passage = self._text_field_embedder(passage)
 
-        embedded_question = self._bert_projection(embedded_question)
-        embedded_passage = self._bert_projection(embedded_passage)
+        #embedded_question = self._bert_projection(embedded_question)
+        #embedded_passage = self._bert_projection(embedded_passage)
         print('size embedded_passage:', embedded_passage.shape)
         # mask
         ques_mask = util.get_text_field_mask(question, num_wrapping_dims=0).float()
-        # context_mask = util.get_text_field_mask(passage, num_wrapping_dims=0).float()
+        context_mask = util.get_text_field_mask(passage, num_wrapping_dims=1).float()
 
-        # extract word embeddings for each sentence
-        batch_size, max_passage_len, emb_size = embedded_passage.size()
-        batch_size, max_num_sent, _ = sentence_spans.size()
-        # Shape(spans_rep): (batch_size * num_spans, max_batch_span_width, embedding_dim)
-        # Shape(spans_mask): (batch_size, num_spans, max_batch_span_width)
-        spans_rep_sp, spans_mask = convert_sequence_to_spans(embedded_passage, sentence_spans)
         # chain prediction
         # Shape(all_predictions): (batch_size, num_decoding_steps)
         # Shape(all_logprobs): (batch_size, num_decoding_steps)
@@ -108,7 +102,7 @@ class PTNChainBidirectionalAttentionFlow(Model):
         gate_probs,         \
         gate_mask,          \
         g_att_score,        \
-        orders = self._span_gate(spans_rep_sp, spans_mask,
+        orders = self._span_gate(embedded_passage, context_mask,
                                  embedded_question, ques_mask,
                                  evd_chain_labels,
                                  self._gate_self_attention_layer,
@@ -262,3 +256,125 @@ class PTNChainBidirectionalAttentionFlow(Model):
                     best_word_span[b, 1] = j
                     max_span_log_prob[b] = val1 + val2
         return best_word_span
+
+
+@Seq2SeqEncoder.register("bert_span_gate")
+class SpanGate(Seq2SeqEncoder):
+    def __init__(self, span_dim,
+                       max_decoding_steps=5, predict_eos=True, cell='lstm',
+                       train_helper="sample", val_helper="beamsearch", beam_size=3,
+                       aux_input_dim=None,#200,#None,
+                       pass_label=False):
+        super().__init__()
+        self.evd_decoder = PointerNetDecoder(LinearMatrixAttention(span_dim, span_dim, "x,y,x*y"),
+                                             memory_dim=span_dim,
+                                             aux_input_dim=aux_input_dim,
+                                             train_helper=train_helper,
+                                             val_helper=val_helper,
+                                             beam_size=beam_size,
+                                             max_decoding_steps=max_decoding_steps,
+                                             predict_eos=predict_eos,
+                                             cell=cell)
+
+    def forward(self,
+                spans_tensor: torch.FloatTensor,
+                spans_mask: torch.FloatTensor,
+                question_tensor: torch.FloatTensor,
+                question_mask: torch.FloatTensor,
+                evd_chain_labels: torch.FloatTensor,
+                self_att_layer: Seq2SeqEncoder,
+                sent_encoder: Seq2SeqEncoder,
+                get_all_beam: bool=False):
+
+        print("spans_tensor", spans_tensor.shape)
+        batch_size, num_spans, max_batch_span_width = spans_mask.size()
+        # Shape: (batch_size, num_spans, embedding_dim)
+        max_pooled_span_emb = spans_tensor[:, :, 0, :]
+
+        # self attention on spans representation
+        # shape: (batch_size, num_spans, embedding_dim)
+        #max_pooled_span_emb = max_pooled_span_emb.view(batch_size, num_spans, spans_tensor.size(2))
+        # shape: (batch_size, num_spans)
+        max_pooled_span_mask = (torch.sum(spans_mask, dim=-1) >= 1).float()
+        '''
+        # shape: (batch_size, num_spans, embedding_dim)
+        max_pooled_span_emb = sent_encoder(max_pooled_span_emb, max_pooled_span_mask)
+        # shape: (batch_size, num_spans, embedding_dim)
+        att_max_pooled_span_emb, _, att_score = self_att_layer(max_pooled_span_emb, max_pooled_span_mask)
+        max_pooled_span_emb = max_pooled_span_emb + att_max_pooled_span_emb
+        '''
+        att_score = None
+
+        # extract the final hidden states as the question vector
+        # Shape: (batch_size, embedding_dim)
+        #question_emb = util.get_final_encoder_states(question_tensor, question_mask, True)
+        question_emb = question_tensor[:, 0, :]
+
+        # decode the most likely evidence path
+        # shape (all_predictions): (batch_size, K, num_decoding_steps)
+        # shape (all_logprobs): (batch_size, K, num_decoding_steps)
+        # shape (seq_logprobs): (batch_size, K)
+        # shape (final_hidden): (batch_size, K, decoder_output_dim)
+        all_predictions, all_logprobs, seq_logprobs, final_hidden = self.evd_decoder(max_pooled_span_emb,
+                                                                                     max_pooled_span_mask,
+                                                                                     question_emb,
+                                                                                     aux_input=None,#question_emb,#None
+                                                                                     transition_mask=None,
+                                                                                     labels=evd_chain_labels)
+        print("all prediction:", all_predictions)
+
+        # The selection order of each sentence. Set to -1 if not being chosen
+        # shape: (batch_size, K, num_spans)
+        _, beam, num_steps = all_predictions.size()
+        orders = spans_tensor.new_ones((batch_size, beam, 1+num_spans)) * -1
+        indices = util.get_range_vector(num_steps, util.get_device_of(spans_tensor)).\
+                float().\
+                unsqueeze(0).\
+                unsqueeze(0).\
+                expand(batch_size, beam, num_steps)
+        orders.scatter_(2, all_predictions, indices)
+        orders = orders[:, :, 1:]
+
+        # For beamsearch, get the top one. For other helpers, just like squeeze
+        if not get_all_beam:
+            all_predictions = all_predictions[:, 0, :]
+            all_logprobs = all_logprobs[:, 0, :]
+            seq_logprobs = seq_logprobs[:, 0]
+            final_hidden = final_hidden[:, 0, :]
+
+        # build the gate. The dim is set to 1 + num_spans to account for the end embedding
+        # shape: (batch_size, 1+num_spans) or (batch_size, K, 1+num_spans)
+        if not get_all_beam:
+            gate = spans_tensor.new_zeros((batch_size, 1+num_spans))
+        else:
+            gate = spans_tensor.new_zeros((batch_size, beam, 1+num_spans))
+        gate.scatter_(-1, all_predictions, 1.)
+        # remove the column for end embedding
+        # shape: (batch_size, num_spans) or (batch_size, K, num_spans)
+        gate = gate[..., 1:]
+        #print("gate:", gate)
+        #print("real num:", torch.sum(gate, dim=1))
+        #print("seq probs:", torch.exp(seq_logprobs))
+
+        # shape: (batch_size * num_spans, 1) or (batch_size * K * num_spans, 1)
+        if not get_all_beam:
+            gate = gate.reshape(batch_size * num_spans, 1)
+        else:
+            gate = gate.reshape(batch_size * beam * num_spans, 1)
+
+        # The probability of each selected sentence being selected. If not selected, set to 0.
+        # shape: (batch_size * num_spans, 1) or (batch_size * K * num_spans, 1)
+        if not get_all_beam:
+            gate_probs = spans_tensor.new_zeros((batch_size, 1+num_spans))
+        else:
+            gate_probs = spans_tensor.new_zeros((batch_size, beam, 1+num_spans))
+        gate_probs.scatter_(-1, all_predictions, all_logprobs.exp())
+        gate_probs = gate_probs[..., 1:]
+        if not get_all_beam:
+            gate_probs = gate_probs.reshape(batch_size * num_spans, 1)
+        else:
+            gate_probs = gate_probs.reshape(batch_size * beam * num_spans, 1)
+
+        return all_predictions, all_logprobs, seq_logprobs, gate, gate_probs, max_pooled_span_mask, att_score, orders
+
+

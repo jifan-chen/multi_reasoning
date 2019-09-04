@@ -106,7 +106,7 @@
 
 
     "span_gate": {
-      "type": "span_gate",
+      "type": "bert_span_gate",
       "span_dim": 200,
       "max_decoding_steps": 5,
       "predict_eos": true,
