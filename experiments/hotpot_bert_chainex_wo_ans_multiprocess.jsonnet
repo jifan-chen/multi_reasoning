@@ -2,18 +2,18 @@
   "dataset_reader": {
       "type": "multiprocess",
       "base_reader" : {
-          "type": "hotpot_reader_bert_flat",
+          "type": "hotpot_reader_bert_sentence",
           "lazy": true,
           "para_limit": 2000,
           "filter_compare_q": false,
           "token_indexers": {
             "bert": {
-                "max_pieces": 64,
+                "max_pieces": 512,
                 "type": "bert-pretrained",
                 "pretrained_model": "bert-base-uncased",
                 "do_lowercase": true,
                 "use_starting_offsets": true,
-                "truncate_long_sequences": false
+                "truncate_long_sequences": true
             },
             "token_characters": {
               "type": "characters",
@@ -36,18 +36,18 @@
   },
 
   "validation_dataset_reader": {
-    "type": "hotpot_reader_bert_flat",
-    "lazy": true,
+    "type": "hotpot_reader_bert_sentence",
+    "lazy": false,
     "para_limit": 2000,
     "filter_compare_q": false,
     "token_indexers": {
       "bert": {
-          "max_pieces": 64,
+          "max_pieces": 512,
           "type": "bert-pretrained",
           "pretrained_model": "bert-base-uncased",
           "do_lowercase": true,
           "use_starting_offsets": true,
-          "truncate_long_sequences": false
+          "truncate_long_sequences": true
       },
       "token_characters": {
         "type": "characters",
@@ -59,9 +59,10 @@
     }
   },
 
-  "train_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/train_chain/train*.json",
-  //"train_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/train_chain_2fold/fold1/train*.json",
-  "validation_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_chain.json",
+//  "train_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/train_chain/train*.json",
+    "train_data_path": "/scratch/cluster/jfchen/jfchen/data/hotpot/dev/dev_selected_oracle.json",
+//  "validation_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_chain.json",
+    "validation_data_path": "/scratch/cluster/jfchen/jfchen/data/hotpot/dev/dev_selected_oracle.json",
 
   "model": {
     "type": "hotpot_bert_chainex_wo_ans",
@@ -107,7 +108,7 @@
 
     "span_gate": {
       "type": "bert_span_gate",
-      "span_dim": 200,
+      "span_dim": 768,
       "max_decoding_steps": 5,
       "predict_eos": true,
       "cell": "lstm",
@@ -146,7 +147,7 @@
       "sorting_keys": [
         [
           "passage",
-          "num_tokens"
+          "list_num_tokens"
         ]
       ],
       "max_instances_in_memory": 10,

@@ -72,12 +72,12 @@ class PTNChainBidirectionalAttentionFlow(Model):
         # there may be some instances that we can't find any evd chain for training
         # In that case, use the mask to ignore those instances
         evd_instance_mask = (evd_chain_labels[:, 0] != 0).float() if not evd_chain_labels is None else None
-
+        print('passage size:', passage['bert'].shape)
         # bert embedding for answer prediction
         # shape: [batch_size, max_q_len, emb_size]
         embedded_question = self._text_field_embedder(question)
         # shape: [batch_size, num_sent, max_sent_len+q_len, embedding_dim]
-        embedded_passage = self._text_field_embedder(passage)
+        embedded_passage = self._text_field_embedder(passage, )
 
         #embedded_question = self._bert_projection(embedded_question)
         #embedded_passage = self._bert_projection(embedded_passage)
@@ -85,7 +85,7 @@ class PTNChainBidirectionalAttentionFlow(Model):
         # mask
         ques_mask = util.get_text_field_mask(question, num_wrapping_dims=0).float()
         context_mask = util.get_text_field_mask(passage, num_wrapping_dims=1).float()
-
+        print(context_mask.shape)
         # chain prediction
         # Shape(all_predictions): (batch_size, num_decoding_steps)
         # Shape(all_logprobs): (batch_size, num_decoding_steps)
@@ -107,7 +107,7 @@ class PTNChainBidirectionalAttentionFlow(Model):
                                  evd_chain_labels,
                                  self._gate_self_attention_layer,
                                  self._gate_sent_encoder)
-        batch_size, num_spans, max_batch_span_width = spans_mask.size()
+        batch_size, num_spans, max_batch_span_width = context_mask.size()
 
         output_dict = {
             "pred_sent_labels": gate.squeeze(1).view(batch_size, num_spans), #[B, num_span]
