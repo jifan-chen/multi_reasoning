@@ -44,7 +44,7 @@ def process_evidence_chains(evd_possible_chains, sent_labels_, fields):
             evd_possible_chains_.append(chain)
         fields['evd_chain_labels'] = ListField([ArrayField(np.array(ch), padding_value=0)
                                                 for ch in evd_possible_chains_])
-        print('oracle:', fields['evd_chain_labels'])
+        #print('oracle:', fields['evd_chain_labels'])
     return evd_possible_chains_
 
 
@@ -160,8 +160,8 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
     # print(fields['passage'])
 
     fields['question'] = TextField(question_tokens, token_indexers)
-    print('question:', fields['question'])
-    print('sent_labels:', fields['sent_labels'])
+    #print('question:', fields['question'])
+    #print('sent_labels:', fields['sent_labels'])
     # filter spans that exceed para limit so that the info in metadata is correct
     # token_spans_sent = [(s, e if e < limit else limit - 1) for s, e in token_spans_sent if s < limit]
     # token_spans_sp = [(s, e if e < limit else limit - 1) for s, e in token_spans_sp if s < limit]
@@ -171,7 +171,7 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
                               sent_labels, answer_texts, evd_possible_chains,
                               evd_possible_chains_, ans_sent_idxs, article_id)
     fields['metadata'] = MetadataField(metadata)
-    input()
+    #input()
     return Instance(fields)
 
 

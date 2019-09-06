@@ -72,7 +72,7 @@ class PTNChainBidirectionalAttentionFlow(Model):
         # there may be some instances that we can't find any evd chain for training
         # In that case, use the mask to ignore those instances
         evd_instance_mask = (evd_chain_labels[:, 0] != 0).float() if not evd_chain_labels is None else None
-        print('passage size:', passage['bert'].shape)
+        #print('passage size:', passage['bert'].shape)
         # bert embedding for answer prediction
         # shape: [batch_size, max_q_len, emb_size]
         embedded_question = self._text_field_embedder(question)
@@ -81,11 +81,11 @@ class PTNChainBidirectionalAttentionFlow(Model):
 
         #embedded_question = self._bert_projection(embedded_question)
         #embedded_passage = self._bert_projection(embedded_passage)
-        print('size embedded_passage:', embedded_passage.shape)
+        #print('size embedded_passage:', embedded_passage.shape)
         # mask
         ques_mask = util.get_text_field_mask(question, num_wrapping_dims=0).float()
         context_mask = util.get_text_field_mask(passage, num_wrapping_dims=1).float()
-        print(context_mask.shape)
+        #print(context_mask.shape)
         # chain prediction
         # Shape(all_predictions): (batch_size, num_decoding_steps)
         # Shape(all_logprobs): (batch_size, num_decoding_steps)
@@ -151,7 +151,7 @@ class PTNChainBidirectionalAttentionFlow(Model):
             question_tokens = []
             passage_tokens = []
             #token_spans_sp = []
-            token_spans_sent = []
+            #token_spans_sent = []
             sent_labels_list = []
             evd_possible_chains = []
             ans_sent_idxs = []
@@ -161,11 +161,11 @@ class PTNChainBidirectionalAttentionFlow(Model):
             for i in range(batch_size):
                 question_tokens.append(metadata[i]['question_tokens'])
                 passage_tokens.append(metadata[i]['passage_tokens'])
-                token_spans_sent.append(metadata[i]['token_spans_sent'])
+                #token_spans_sent.append(metadata[i]['token_spans_sent'])
                 sent_labels_list.append(metadata[i]['sent_labels'])
                 ids.append(metadata[i]['_id'])
                 passage_str = metadata[i]['original_passage']
-                offsets = metadata[i]['token_offsets']
+                #offsets = metadata[i]['token_offsets']
                 answer_texts = metadata[i].get('answer_texts', [])
                 output_dict['answer_texts'].append(answer_texts)
 
@@ -192,7 +192,7 @@ class PTNChainBidirectionalAttentionFlow(Model):
             output_dict['question_tokens'] = question_tokens
             output_dict['passage_tokens'] = passage_tokens
             #output_dict['token_spans_sp'] = token_spans_sp
-            output_dict['token_spans_sent'] = token_spans_sent
+            #output_dict['token_spans_sent'] = token_spans_sent
             output_dict['sent_labels'] = sent_labels_list
             output_dict['evd_possible_chains'] = evd_possible_chains
             output_dict['ans_sent_idxs'] = ans_sent_idxs
@@ -286,7 +286,8 @@ class SpanGate(Seq2SeqEncoder):
                 sent_encoder: Seq2SeqEncoder,
                 get_all_beam: bool=False):
 
-        print("spans_tensor", spans_tensor.shape)
+        #print("spans_tensor", spans_tensor.shape)
+        #print("spans_mask", spans_mask.shape)
         batch_size, num_spans, max_batch_span_width = spans_mask.size()
         # Shape: (batch_size, num_spans, embedding_dim)
         max_pooled_span_emb = spans_tensor[:, :, 0, :]
@@ -315,6 +316,8 @@ class SpanGate(Seq2SeqEncoder):
         # shape (all_logprobs): (batch_size, K, num_decoding_steps)
         # shape (seq_logprobs): (batch_size, K)
         # shape (final_hidden): (batch_size, K, decoder_output_dim)
+        #print("max_pooled_span_emb", max_pooled_span_emb.shape)
+        #print("max_pooled_span_mask", max_pooled_span_mask.shape)
         all_predictions, all_logprobs, seq_logprobs, final_hidden = self.evd_decoder(max_pooled_span_emb,
                                                                                      max_pooled_span_mask,
                                                                                      question_emb,

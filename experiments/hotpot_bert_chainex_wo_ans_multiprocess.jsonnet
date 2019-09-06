@@ -60,9 +60,9 @@
   },
 
 //  "train_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/train_chain/train*.json",
-    "train_data_path": "/scratch/cluster/jfchen/jfchen/data/hotpot/dev/dev_selected_oracle.json",
+    "train_data_path": "/scratch/cluster/j0717lin/data/hotpot/dev/dev_selected_oracle.json",
 //  "validation_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_chain.json",
-    "validation_data_path": "/scratch/cluster/jfchen/jfchen/data/hotpot/dev/dev_selected_oracle.json",
+    "validation_data_path": "/scratch/cluster/j0717lin/data/hotpot/dev/dev_selected_oracle.json",
 
   "model": {
     "type": "hotpot_bert_chainex_wo_ans",
@@ -78,7 +78,7 @@
             "type": "my-bert-pretrained",
             "requires_grad": true,
             "pretrained_model": "bert-base-uncased",
-            "max_pieces": 64
+            "max_pieces": 512
         },
 //        "token_characters": {
 //                "type": "character_encoding",
