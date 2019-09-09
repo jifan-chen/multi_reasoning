@@ -5,23 +5,25 @@
           "type": "hotpot_reader_bert_sentence",
           "lazy": true,
           "para_limit": 2000,
+          "sent_limit": 70,
+          "training": true,
           "filter_compare_q": false,
           "token_indexers": {
             "bert": {
-                "max_pieces": 512,
-                "type": "bert-pretrained",
+                "max_pieces": 128,
+                "type": "my-bert-pretrained",
                 "pretrained_model": "bert-base-uncased",
                 "do_lowercase": true,
                 "use_starting_offsets": true,
                 "truncate_long_sequences": true
             },
-            "token_characters": {
-              "type": "characters",
-              "character_tokenizer": {
-                "byte_encoding": "utf-8"
-              },
-              "min_padding_length": 5
-            }
+//            "token_characters": {
+//              "type": "characters",
+//              "character_tokenizer": {
+//                "byte_encoding": "utf-8"
+//              },
+//              "min_padding_length": 5
+//            }
           }
       },
       "num_workers": 2,
@@ -37,32 +39,34 @@
 
   "validation_dataset_reader": {
     "type": "hotpot_reader_bert_sentence",
-    "lazy": false,
+    "lazy": true,
     "para_limit": 2000,
+    "sent_limit": 100,
+    "training": false,
     "filter_compare_q": false,
     "token_indexers": {
       "bert": {
           "max_pieces": 512,
-          "type": "bert-pretrained",
+          "type": "my-bert-pretrained",
           "pretrained_model": "bert-base-uncased",
           "do_lowercase": true,
           "use_starting_offsets": true,
           "truncate_long_sequences": true
       },
-      "token_characters": {
-        "type": "characters",
-        "character_tokenizer": {
-          "byte_encoding": "utf-8"
-        },
-        "min_padding_length": 5
-      }
+//      "token_characters": {
+//        "type": "characters",
+//        "character_tokenizer": {
+//          "byte_encoding": "utf-8"
+//        },
+//        "min_padding_length": 5
+//      }
     }
   },
 
 //  "train_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/train_chain/train*.json",
-    "train_data_path": "/scratch/cluster/j0717lin/data/hotpot/dev/dev_selected_oracle.json",
+    "train_data_path": "/scratch/cluster/jfchen/jfchen/data/hotpot/train_selected_oracle/train*.json",
 //  "validation_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_chain.json",
-    "validation_data_path": "/scratch/cluster/j0717lin/data/hotpot/dev/dev_selected_oracle.json",
+    "validation_data_path": "/scratch/cluster/jfchen/jfchen/data/hotpot/dev/dev_selected_oracle.json",
 
   "model": {
     "type": "hotpot_bert_chainex_wo_ans",
@@ -192,7 +196,7 @@
     "num_epochs": 20,
     "grad_norm": 5.0,
     "patience": 10,
-    "cuda_device": [0]
+    "cuda_device": [0,1,2,3]
   }
 
 }

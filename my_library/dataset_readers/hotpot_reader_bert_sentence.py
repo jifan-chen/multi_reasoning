@@ -198,6 +198,8 @@ class HotpotDatasetReader(DatasetReader):
                  token_indexers: Dict[str, TokenIndexer] = None,
                  para_limit: int = 2250,
                  sent_limit: int = 80,
+                 sent_num_limit: int = 5,
+                 training: bool = False,
                  filter_compare_q: bool = False,
                  chain: str = 'rb',
                  lazy: bool = False) -> None:
@@ -206,8 +208,10 @@ class HotpotDatasetReader(DatasetReader):
         self._token_indexers = token_indexers or {'tokens': SingleIdTokenIndexer()}
         self._para_limit = para_limit
         self._sent_limit = sent_limit
+        self._sent_num_limit = sent_num_limit
         self._filter_compare_q = filter_compare_q
         self.chain = chain
+        self.training = training
 
     @staticmethod
     def find_all_span_starts(answer, context):
@@ -258,16 +262,22 @@ class HotpotDatasetReader(DatasetReader):
         for para in paragraphs:
             cur_title, cur_para = para[0], para[1]
 
-            for sent_id, sent in enumerate(cur_para):
+            for sent_id, sent in enumerate(cur_para[:self._sent_num_limit]):
                 # Tokenize each sentence
                 tokenized_sent = self._tokenizer.tokenize(sent)
                 if len(tokenized_sent) > 0:
                     # convert to Allen's Token for parallel reading
-                    tokenized_sent = [Token(text=tk.text) for tk in tokenized_sent]
+                    tokenized_sent = [Token(text=tk.text) for tk in tokenized_sent][:self._sent_limit]
                     tokenized_sent.insert(0, Token(text='[CLS]'))
                     tokenized_sent.append(Token(text='[SEP]'))
-                    tokenized_sent.extend(tokenized_concat_ques[:self._sent_limit])
+                    tokenized_sent.extend(tokenized_concat_ques)
                     sent = '[CLS]{}[SEP]{}'.format(sent, appended_concat_question_text)
+                else:
+                    tokenized_sent.insert(0, Token(text='[CLS]'))
+                    tokenized_sent.append(Token(text='[SEP]'))
+
+                passage_sent_tokens.append(tokenized_sent)
+                concat_article += sent
 
                 if (cur_title, sent_id) in sp_set:
                     if answer_text in sent:
@@ -276,9 +286,6 @@ class HotpotDatasetReader(DatasetReader):
                     sent_labels.append(1)
                 else:
                     sent_labels.append(0)
-
-                passage_sent_tokens.append(tokenized_sent)
-                concat_article += sent
 
         return (tokenized_stand_alone_ques,
                 appended_question_text,
@@ -306,6 +313,9 @@ class HotpotDatasetReader(DatasetReader):
         logger.info("Reading the dataset")
 
         for article in dataset:
+            paragraphs = article['context']
+            if len(paragraphs) >= 7 and self.training:
+                continue
             processed_article = self.process_raw_instance(article)
             instance = self.text_to_instance(*processed_article)
             yield instance

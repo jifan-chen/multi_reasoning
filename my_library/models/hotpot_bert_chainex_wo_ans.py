@@ -75,10 +75,11 @@ class PTNChainBidirectionalAttentionFlow(Model):
         #print('passage size:', passage['bert'].shape)
         # bert embedding for answer prediction
         # shape: [batch_size, max_q_len, emb_size]
+        print('\nBert wordpiece size:', passage['bert'].shape)
         embedded_question = self._text_field_embedder(question)
         # shape: [batch_size, num_sent, max_sent_len+q_len, embedding_dim]
         embedded_passage = self._text_field_embedder(passage, )
-
+        # print('\npassage size:', embedded_passage.shape)
         #embedded_question = self._bert_projection(embedded_question)
         #embedded_passage = self._bert_projection(embedded_passage)
         #print('size embedded_passage:', embedded_passage.shape)
@@ -129,9 +130,9 @@ class PTNChainBidirectionalAttentionFlow(Model):
                                                   mask=gate_mask,
                                                   instance_mask=evd_instance_mask if self.training else None,
                                                   sum=False)
-        print("TP:", evd_TP)
-        print("NP:", evd_NP)
-        print("NT:", evd_NT)
+        # print("TP:", evd_TP)
+        # print("NP:", evd_NP)
+        # print("NT:", evd_NT)
         evd_ps = np.array(evd_TP) / (np.array(evd_NP) + 1e-13)
         evd_rs = np.array(evd_TP) / (np.array(evd_NT) + 1e-13)
         evd_f1s = 2. * ((evd_ps * evd_rs) / (evd_ps + evd_rs + 1e-13))
@@ -182,7 +183,7 @@ class PTNChainBidirectionalAttentionFlow(Model):
                         self.evd_ans_metric(0)
                         pred_chains_include_ans.append(0)
                     if any([any([pred_sent_orders[beam][s_idx-1] >= 0 for s_idx in metadata[i]['ans_sent_idxs']]) 
-                                                                        for beam in range(len(pred_sent_orders))]):
+                                                                      for beam in range(len(pred_sent_orders))]):
                         self.evd_beam_ans_metric(1)
                         beam_pred_chains_include_ans.append(1)
                     else:
@@ -225,7 +226,7 @@ class PTNChainBidirectionalAttentionFlow(Model):
                 'beam_ans_in_evd': beam_ans_in_evd,
                 }
         for name, tracker in self._loss_trackers.items():
-            metrics[name] = tracker.get_metric(reset)
+            metrics[name] = tracker.get_metric(reset).item()
         evd_sup_acc = self.evd_sup_acc_metric.get_metric(reset)
         metrics['evd_sup_acc'] = evd_sup_acc
         return metrics
