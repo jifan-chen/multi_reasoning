@@ -106,7 +106,7 @@ def get_token_spans_sent(passage_sent_tokens):
     return passage_tokens, token_spans_sent
 
 
-@Predictor.register('demo_hotpot_predictor')
+@Predictor.register('demo_hotpot_bert_chainex_predictor')
 class DemoHotpotPredictor(Predictor):
     @overrides
     def __init__(self, model: Model, dataset_reader: DatasetReader) -> None:
@@ -118,14 +118,17 @@ class DemoHotpotPredictor(Predictor):
             self._dataset_reader = dataset_reader.reader
         else:
             self._dataset_reader = dataset_reader
-        with open('/scratch/cluster/j0717lin/multihopQA/hotpot/test/test_10000_chain.json', 'r') as f:
+        with open('/scratch/cluster/jfchen/jfchen/data/hotpot/train_selected_oracle/train0.json', 'r') as f:
             train = json.load(f)
-        with open('/scratch/cluster/j0717lin/multihopQA/hotpot/dev/dev_distractor_chain.json', 'r') as f:
+        with open('/scratch/cluster/jfchen/jfchen/data/hotpot/dev/dev_selected_oracle.json', 'r') as f:
             dev = json.load(f)
+        '''
         with open('/scratch/cluster/j0717lin/multihopQA/hotpot/dev/dev_distractor_chain_easy.json', 'r') as f:
             dev_easy = json.load(f)
         with open('/scratch/cluster/j0717lin/multihopQA/hotpot/dev/dev_distractor_chain_hard.json', 'r') as f:
             dev_hard = json.load(f)
+        '''
+        dev_easy, dev_hard = None, None
         self.demo_dataset = {'train': train,
                              'dev': dev,
                              'dev_easy': dev_easy,
@@ -179,7 +182,7 @@ class DemoHotpotPredictor(Predictor):
         best_span_str       = output.get('best_span_str', None)
         article_id          = output['_id']
         passage_tokens, token_spans_sent = get_token_spans_sent(passage_sent_tokens)
-        if best_span_str is not None
+        if best_span_str is not None:
             em, f1 = calc_em_and_f1(best_span_str, answer_texts)
         else:
             em, f1 = None, None
