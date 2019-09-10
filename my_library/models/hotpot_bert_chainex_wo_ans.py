@@ -161,7 +161,7 @@ class PTNChainBidirectionalAttentionFlow(Model):
             ids = []
             for i in range(batch_size):
                 question_tokens.append(metadata[i]['question_tokens'])
-                passage_tokens.append(metadata[i]['passage_tokens'])
+                passage_tokens.append(metadata[i]['passage_sent_tokens'])
                 #token_spans_sent.append(metadata[i]['token_spans_sent'])
                 sent_labels_list.append(metadata[i]['sent_labels'])
                 ids.append(metadata[i]['_id'])
@@ -191,7 +191,7 @@ class PTNChainBidirectionalAttentionFlow(Model):
                         beam_pred_chains_include_ans.append(0)
 
             output_dict['question_tokens'] = question_tokens
-            output_dict['passage_tokens'] = passage_tokens
+            output_dict['passage_sent_tokens'] = passage_tokens
             #output_dict['token_spans_sp'] = token_spans_sp
             #output_dict['token_spans_sent'] = token_spans_sent
             output_dict['sent_labels'] = sent_labels_list
