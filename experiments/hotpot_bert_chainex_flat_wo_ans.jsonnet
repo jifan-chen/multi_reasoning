@@ -2,28 +2,26 @@
   "dataset_reader": {
       "type": "multiprocess",
       "base_reader" : {
-          "type": "hotpot_reader_bert_sentence",
+          "type": "hotpot_reader_bert_flat",
           "lazy": true,
           "para_limit": 2000,
-          "sent_limit": 100,
-          "training": true,
           "filter_compare_q": false,
           "token_indexers": {
             "bert": {
-                "max_pieces": 168,
-                "type": "my-bert-pretrained",
+                "max_pieces": 64,
+                "type": "bert-pretrained",
                 "pretrained_model": "bert-base-uncased",
                 "do_lowercase": true,
                 "use_starting_offsets": true,
-                "truncate_long_sequences": true
+                "truncate_long_sequences": false
             },
-//            "token_characters": {
-//              "type": "characters",
-//              "character_tokenizer": {
-//                "byte_encoding": "utf-8"
-//              },
-//              "min_padding_length": 5
-//            }
+            "token_characters": {
+              "type": "characters",
+              "character_tokenizer": {
+                "byte_encoding": "utf-8"
+              },
+              "min_padding_length": 5
+            }
           }
       },
       "num_workers": 2,
@@ -39,37 +37,34 @@
 
   "validation_dataset_reader": {
     "type": "hotpot_reader_bert_flat",
-    "lazy": false,
+    "lazy": true,
     "para_limit": 2000,
-    "sent_limit": 100,
-    "training": false,
     "filter_compare_q": false,
     "token_indexers": {
       "bert": {
-          "max_pieces": 512,
-          "type": "my-bert-pretrained",
+          "max_pieces": 64,
+          "type": "bert-pretrained",
           "pretrained_model": "bert-base-uncased",
           "do_lowercase": true,
           "use_starting_offsets": true,
-          "truncate_long_sequences": true
+          "truncate_long_sequences": false
       },
-//      "token_characters": {
-//        "type": "characters",
-//        "character_tokenizer": {
-//          "byte_encoding": "utf-8"
-//        },
-//        "min_padding_length": 5
-//      }
+      "token_characters": {
+        "type": "characters",
+        "character_tokenizer": {
+          "byte_encoding": "utf-8"
+        },
+        "min_padding_length": 5
+      }
     }
   },
 
-//  "train_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/train_chain/train*.json",
     "train_data_path": "/scratch/cluster/jfchen/jfchen/data/hotpot/train_selected_oracle/train*.json",
 //  "validation_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_chain.json",
     "validation_data_path": "/scratch/cluster/jfchen/jfchen/data/hotpot/dev/dev_selected_oracle.json",
 
   "model": {
-    "type": "hotpot_bert_chainex_wo_ans",
+    "type": "hotpot_bert_chainex_flat_wo_ans",
 
     "text_field_embedder": {
       "allow_unmatched_keys": true,
@@ -82,7 +77,7 @@
             "type": "my-bert-pretrained",
             "requires_grad": true,
             "pretrained_model": "bert-base-uncased",
-            "max_pieces": 512
+            "max_pieces": 64
         },
 //        "token_characters": {
 //                "type": "character_encoding",
@@ -111,8 +106,8 @@
 
 
     "span_gate": {
-      "type": "bert_span_gate",
-      "span_dim": 768,
+      "type": "span_gate",
+      "span_dim": 200,
       "max_decoding_steps": 5,
       "predict_eos": true,
       "cell": "lstm",
@@ -132,11 +127,11 @@
     },
 
     "gate_self_attention_layer":{
-      "type": "multi_head_self_attention",
-      "num_heads": 4,
-      "input_dim": 768,
-      "attention_dim": 768,
-      "values_dim": 768,
+      "type": "multi_head_self_attention_with_sup",
+      "num_heads": 2,
+      "input_dim": 200,
+      "attention_dim": 200,
+      "values_dim": 200,
       "attention_dropout_prob": 0.1
     },
 
@@ -151,7 +146,7 @@
       "sorting_keys": [
         [
           "passage",
-          "list_num_tokens"
+          "num_tokens"
         ]
       ],
       "max_instances_in_memory": 10,
@@ -196,7 +191,7 @@
     "num_epochs": 20,
     "grad_norm": 5.0,
     "patience": 10,
-    "cuda_device": [6]
+    "cuda_device": [4,5,6,7]
   }
 
 }
