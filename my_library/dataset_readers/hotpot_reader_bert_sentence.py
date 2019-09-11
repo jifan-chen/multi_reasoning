@@ -198,7 +198,6 @@ class HotpotDatasetReader(DatasetReader):
                  token_indexers: Dict[str, TokenIndexer] = None,
                  para_limit: int = 2250,
                  sent_limit: int = 80,
-                 sent_num_limit: int = 5,
                  training: bool = False,
                  filter_compare_q: bool = False,
                  chain: str = 'rb',
@@ -208,7 +207,6 @@ class HotpotDatasetReader(DatasetReader):
         self._token_indexers = token_indexers or {'tokens': SingleIdTokenIndexer()}
         self._para_limit = para_limit
         self._sent_limit = sent_limit
-        self._sent_num_limit = sent_num_limit
         self._filter_compare_q = filter_compare_q
         self.chain = chain
         self.training = training
@@ -255,23 +253,23 @@ class HotpotDatasetReader(DatasetReader):
         tokenized_stand_alone_ques.append(Token(text='[SEP]', idx=tokenized_stand_alone_ques[-1].idx + 1))
         appended_question_text = "[CLS]{}[SEP]".format(question_text)
 
-        tokenized_concat_ques = [Token(text=tk.text) for tk in tokenized_ques]
-        tokenized_concat_ques.append(Token(text='[SEP]'))
-        appended_concat_question_text = "{}[SEP]".format(question_text)
-
         for para in paragraphs:
             cur_title, cur_para = para[0], para[1]
 
-            for sent_id, sent in enumerate(cur_para[:self._sent_num_limit]):
+            for sent_id, sent in enumerate(cur_para):
                 # Tokenize each sentence
                 tokenized_sent = self._tokenizer.tokenize(sent)
                 if len(tokenized_sent) > 0:
+                    tokenized_concat_ques = [Token(text=tk.text) for tk in tokenized_ques]
+                    tokenized_concat_ques.insert(0, Token(text='[CLS]', idx=0))
+                    tokenized_concat_ques.append(Token(text='[SEP]'))
+                    appended_concat_question_text = "[CLS]{}[SEP]".format(question_text)
                     # convert to Allen's Token for parallel reading
                     tokenized_sent = [Token(text=tk.text) for tk in tokenized_sent][:self._sent_limit]
-                    tokenized_sent.insert(0, Token(text='[CLS]'))
                     tokenized_sent.append(Token(text='[SEP]'))
-                    tokenized_sent.extend(tokenized_concat_ques)
-                    sent = '[CLS]{}[SEP]{}'.format(sent, appended_concat_question_text)
+                    tokenized_concat_ques.extend(tokenized_sent)
+                    tokenized_sent = tokenized_concat_ques
+                    sent = '{}{}'.format(appended_concat_question_text, sent)
                 else:
                     tokenized_sent.insert(0, Token(text='[CLS]'))
                     tokenized_sent.append(Token(text='[SEP]'))
@@ -286,7 +284,8 @@ class HotpotDatasetReader(DatasetReader):
                     sent_labels.append(1)
                 else:
                     sent_labels.append(0)
-
+        # print(passage_sent_tokens)
+        # print(concat_article)
         return (tokenized_stand_alone_ques,
                 appended_question_text,
                 concat_article,
