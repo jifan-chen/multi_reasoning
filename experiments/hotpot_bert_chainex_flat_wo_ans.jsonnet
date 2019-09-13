@@ -107,7 +107,7 @@
 
     "span_gate": {
       "type": "span_gate",
-      "span_dim": 200,
+      "span_dim": 768,
       "max_decoding_steps": 5,
       "predict_eos": true,
       "cell": "lstm",
