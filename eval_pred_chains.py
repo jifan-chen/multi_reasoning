@@ -51,10 +51,9 @@ def get_necessary_info(article):
             if (cur_title, sent_id) in sp_set:
                 if answer_text in sent:
                     ans_sent_idxs.append(len(sent_labels))
-                    supporting_facts.append(sent)
-                    sent_labels.append(1)
-                else:
-                    sent_labels.append(0)
+                sent_labels.append(1)
+            else:
+                sent_labels.append(0)
     article['sent_labels'] = sent_labels
     article['ans_sent_idxs'] = ans_sent_idxs
 
