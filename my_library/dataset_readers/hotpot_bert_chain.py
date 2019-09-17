@@ -175,7 +175,7 @@ class HotpotDatasetReader(DatasetReader):
                  tokenizer: Tokenizer = None,
                  token_indexers: Dict[str, TokenIndexer] = None,
                  para_limit: int = 2250,
-                 sent_limit: int = 70,
+                 sent_limit: int = 80,
                  rerank_by_sp: bool = False,
                  lazy: bool = False) -> None:
         super().__init__(lazy)
@@ -303,9 +303,9 @@ class HotpotDatasetReader(DatasetReader):
             else article['pred_chains']
         pred_chains_ques = self.chain_rerank_by_question(article['pred_chains'], question_text, answer_text, all_sents) if self._rerank_by_sp \
             else article['pred_chains']
-        combined_chains_id = self.get_topK_chains(pred_chains_ques, top_k=1, total_num_chains=8)
+        combined_chains_id = self.get_topK_chains(pred_chains_ques, top_k=5, total_num_chains=5)
         if len(combined_chains_id) == 0:
-            combined_chains_id = self.get_topK_chains(pred_chains_ques, top_k=2, total_num_chains=7)
+            combined_chains_id = self.get_topK_chains(pred_chains_ques, top_k=5, total_num_chains=5)
         # combined_chains_id_sp = self.get_topK_chains(pred_chains_sp, top_k=2, total_num_chains=5)
         for id in combined_chains_id:
             if answer_text in all_sents[id]:
@@ -388,8 +388,8 @@ class HotpotDatasetReader(DatasetReader):
             processed_article = self.process_raw_instance(article)
             instance = self.text_to_instance(*processed_article)
             yield instance
-        print(self._answer_count / len(dataset))
-        print(self._avg_chain_length / len(dataset))
+        print('answer_count:', self._answer_count / len(dataset))
+        print('avg_chain_length:', self._avg_chain_length / len(dataset))
 
     @overrides
     def text_to_instance(self,  # type: ignore

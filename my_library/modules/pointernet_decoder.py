@@ -20,7 +20,6 @@ StateType = Dict[str, torch.Tensor]  # pylint: disable=invalid-name
 StepFunctionType = Callable[[torch.Tensor, StateType], Tuple[torch.Tensor, StateType]]  # pylint: disable=invalid-name
 
 
-
 class DecodeHelper_:
     def __init__(self,
                  eos_idx: int,
@@ -111,7 +110,7 @@ class TeacherForcingHelper(DecodeHelper_):
         # probability corresponding to the true labels.
         label_logprobs: List[torch.Tensor] = []
 
-	# Calculate the first timestep. This is done outside the main loop
+        # Calculate the first timestep. This is done outside the main loop
         # so that we can do some initialization for the loop.
         # shape: (batch_size, num_classes)
         state, start_class_log_probabilities = step(start_state, None, start_embedding)
@@ -573,7 +572,7 @@ class PointerNetDecoder(torch.nn.Module):
                  beam_size: int = 3,
                  max_decoding_steps: int = 5,
                  predict_eos: bool = True,
-                 cell: str = 'lstm') -> None:
+                 cell: str = 'gru') -> None:
         super(PointerNetDecoder, self).__init__()                
         # Decoder output dim needs to be the same as the encoder output dim since we initialize the
         # hidden state of the decoder with the final hidden state of the encoder.
