@@ -641,6 +641,7 @@ class PointerNetDecoder(torch.nn.Module):
                 init_hidden_state: torch.Tensor = None,
                 aux_input: torch.Tensor = None,
                 transition_mask: torch.Tensor = None,
+                start_transition_mask: torch.Tensor = None,
                 labels: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # pylint: disable=arguments-differ
         """
@@ -659,6 +660,8 @@ class PointerNetDecoder(torch.nn.Module):
             Shape: ``[batch_size, aux_input_dim]``.
         transition_mask : ``torch.FloatTensor``, optional
             The mask for restricting the action space. Shape: ``[batch_size, memory_len, memory_len]``
+        start_transition_mask : ``torch.FloatTensor``, optional
+            The mask for restricting the action space at t = 0. Shape: ``[batch_size, memory_len]``
         labels : ``torch.IntTensor``, optional
             The true labels for teacher forcing. Shape: ``[batch_size, decoding_len]``
         Returns
@@ -666,7 +669,7 @@ class PointerNetDecoder(torch.nn.Module):
         Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
         """
         batch_size = memory.size(0)
-        start_state = self._init_decoder_state(memory, memory_mask, init_hidden_state, aux_input, transition_mask)
+        start_state = self._init_decoder_state(memory, memory_mask, init_hidden_state, aux_input, transition_mask, start_transition_mask)
         # shape: (batch_size, decoder_input_dim)
         start_embedding = self._start_embedding.expand(batch_size, self.decoder_input_dim)
         if self.training:
@@ -692,7 +695,8 @@ class PointerNetDecoder(torch.nn.Module):
                             memory_mask: torch.Tensor,
                             init_hidden_state: torch.Tensor = None,
                             aux_input: torch.Tensor = None,
-                            transition_mask: torch.Tensor = None) -> Dict[str, torch.Tensor]:
+                            transition_mask: torch.Tensor = None,
+                            start_transition_mask: torch.Tensor = None) -> Dict[str, torch.Tensor]:
         """
         Initialize the state to be passed to the decoder at the first decoding time step.
         """
@@ -737,6 +741,16 @@ class PointerNetDecoder(torch.nn.Module):
             # shape: (batch_size, 1+memory_len, 1+memory_len)
             transition_mask = F.pad(transition_mask, (1, 0, 1, 0), 'constant', int(self._predict_eos))
             state['transition_mask'] = transition_mask
+        # The start transition mask also need to be prepended
+        # If start transition mask is None, first set it to ones
+        if start_transition_mask is None:
+            start_transition_mask = memory_mask.new_ones((batch_size, memory_len))
+        # Since we don't want to get eos in the beginning, always prepend zeros
+        # shape: (batch_size, 1)
+        # shape: (batch_size, 1+memory_len)
+        mask_prepend = start_transition_mask.new_zeros((batch_size, 1))
+        start_transition_mask = torch.cat([mask_prepend, start_transition_mask], dim=1)
+        state['start_transition_mask'] = start_transition_mask
 
         return state
 
@@ -772,6 +786,10 @@ class PointerNetDecoder(torch.nn.Module):
             assert not next_input is None
             # shape: (group_size, decoder_input_dim)
             decoder_input = next_input
+            # get the start transition mask
+            # shape: (group_size, memory_len)
+            start_transition_mask = state['start_transition_mask']
+            memory_mask = memory_mask * start_transition_mask.float()
 
         # We apply another mask to prevent the model repeatedly selecting the same memory to point to.
         if "hist_predictions" in state:
@@ -827,302 +845,631 @@ class PointerNetDecoder(torch.nn.Module):
         return state, attention_logprobs#, attention_probs
 
 
-class AdpMemPointerNetDecoder(torch.nn.Module):
-    """
-    Most of the codes are coming from the decoding part of CopyNetSeq2Seq from AllenNLP
-    Parameters
-    ----------
-    attention : ``MatrixAttention``, required
-        This is used to get the alignment scores between decoder hidden state and the memory.
-    memory_dim : ``int``, required
-        The embedding dimension of the encoder outputs (memory).
-    aux_input_dim : ``int``, optional
-        The embedding dimension of the auxilary decoder input.
-    beam_size : ``int``, optional (default: 3)
-        Beam width to use for beam search prediction.
-    max_decoding_steps : ``int``, optional (default: 5)
-        Maximum sequence length of target predictions.
-    """
-
-    def __init__(self,
-                 attention: MatrixAttention,
-                 fg_attention: MatrixAttention,
-                 memory_dim: int,
-                 aux_input_dim: int = None,
-                 train_helper='sample',
-                 val_helper='beamsearch',
-                 beam_size: int = 3,
-                 max_decoding_steps: int = 5,
-                 predict_eos: bool = True,
-                 cell: str = 'lstm') -> None:
-        super(AdpMemPointerNetDecoder, self).__init__()                
-        # Decoder output dim needs to be the same as the encoder output dim since we initialize the
-        # hidden state of the decoder with the final hidden state of the encoder.
-        # We arbitrarily set the decoder's input dimension to be the same as the output dimension.
-        self.encoder_output_dim = memory_dim
-        self.decoder_output_dim = memory_dim
-        self.decoder_input_dim = memory_dim
-        self.aux_input_dim = aux_input_dim or 0
-
-        # The decoder input will be the embedding vector that the decoder is pointing to 
-        # in the memory in the previous timestep concatenated with some auxiliary input if provided.
-        self._attention = attention
-        self._fg_attention = fg_attention
-        self._input_projection_layer = Linear(
-                self.encoder_output_dim + self.aux_input_dim,
-                self.decoder_input_dim)
-
-        # We then run the projected decoder input through an LSTM cell to produce
-        # the next hidden state.
-        self._cell = cell
-        if cell == 'lstm':
-            self._decoder_cell = LSTMCell(self.decoder_input_dim, self.decoder_output_dim)
-        elif cell == 'gru':
-            self._decoder_cell = GRUCell(self.decoder_input_dim, self.decoder_output_dim)
-
-        # At initial step we take the trainable ``start embedding`` as input
-        self._start_embedding = nn.Parameter(torch.Tensor(1, self.decoder_input_dim))
-        nn.init.normal_(self._start_embedding, std=0.01)
-
-        # The end embedding which we prepend to the memmory so that the pointernet
-        # can learn to terminate the prediction if necessary
-        self._end_embedding = nn.Parameter(torch.Tensor(1, self.encoder_output_dim), requires_grad=True)
-        nn.init.normal_(self._end_embedding, std=0.01)
-
-        # We set the eos index to zero since the end embedding is prepended to the memory
-        self._eos_idx = 0
-        self._predict_eos = predict_eos
-
-        def get_helper(helper_type):
-            if helper_type == 'teacher_forcing':
-                return TeacherForcingHelper(eos_idx=self._eos_idx,
-                                            max_steps=max_decoding_steps)
-            elif helper_type == 'sample':
-                return SamplingHelper(eos_idx=self._eos_idx,
-                                      max_steps=max_decoding_steps)
-            elif helper_type == 'greedy':
-                return GreedyHelper(eos_idx=self._eos_idx,
-                                    max_steps=max_decoding_steps)
-            elif helper_type == 'beamsearch':
-                return BeamSearchHelper(beam_size=beam_size,
-                                        eos_idx=self._eos_idx,
-                                        max_steps=max_decoding_steps)
-            else:
-                raise ValueError("Unsupported Decoding Helper!")
-        # Training decoding helper
-        self._train_helper_type = train_helper
-        self._train_decoding_helper = get_helper(train_helper)
-        # At prediction time, we'll use a beam search to find the best target sequence.
-        self._eval_helper_type = val_helper
-        self._eval_decoding_helper = get_helper(val_helper)
-
-    @overrides
-    def forward(self,  # type: ignore
-                memory: torch.Tensor,
-                memory_mask: torch.Tensor,
-                init_hidden_state: torch.Tensor = None,
-                aux_input: torch.Tensor = None,
-                transition_mask: torch.Tensor = None,
-                labels: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        # pylint: disable=arguments-differ
-        """
-        Make foward pass with decoder logic for producing the entire target sequence.
-        Parameters
-        ----------
-        memory : ``torch.FloatTensor``, required
-            The output of an encoder. Shape: ``[batch_size, memory_len, mem_span_length, encoder_output_dim]``
-        memory_mask : ``torch.FloatTensor``, required
-            The mask of the encoder output. Shape: ``[batch_size, memory_len, mem_span_length]``
-        init_hidden_state : ``torch.FloatTensor``, optional
-            The initial hidden state for the decoder cell. Shape: ``[batch_size, decoder_output_dim]``.
-            If not provided, the hidden state will be initialized with zero.
-        aux_input : ``torch.FloatTensor``, optional
-            The auxilary information that will be feed to the deocder in every step.
-            Shape: ``[batch_size, aux_input_dim]``.
-        transition_mask : ``torch.FloatTensor``, optional
-            The mask for restricting the action space. Shape: ``[batch_size, memory_len, memory_len]``
-        labels : ``torch.IntTensor``, optional
-            The true labels for teacher forcing. Shape: ``[batch_size, decoding_len]``
-        Returns
-        -------
-        Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-        """
-        batch_size = memory.size(0)
-        start_state = self._init_decoder_state(memory, memory_mask, init_hidden_state, aux_input, transition_mask)
-        # shape: (batch_size, decoder_input_dim)
-        start_embedding = self._start_embedding.expand(batch_size, self.decoder_input_dim)
-        if self.training:
-            helper = self._train_decoding_helper
-        else:
-            helper = self._eval_decoding_helper
-        # shape (all_predictions): (batch_size, K, num_decoding_steps)
-        # shape (all_logprobs): (batch_size, K, num_decoding_steps)
-        # shape (seq_logprobs): (batch_size, K)
-        # shape (final_hidden): (batch_size, K, decoder_output_dim)
-        all_predictions, all_logprobs, seq_logprobs, final_hidden = helper.search(
-                start_embedding, start_state, self._decoder_step, labels)
-        # add a extra beam dimension if needed
-        if all_predictions.dim() == 2:
-            all_predictions = all_predictions.unsqueeze(1)
-            all_logprobs = all_logprobs.unsqueeze(1)
-            seq_logprobs = seq_logprobs.unsqueeze(1)
-            final_hidden = final_hidden.unsqueeze(1)
-        return all_predictions, all_logprobs, seq_logprobs, final_hidden
-
-    def _init_decoder_state(self,
-                            tok_memory: torch.Tensor,
-                            tok_memory_mask: torch.Tensor,
-                            init_hidden_state: torch.Tensor = None,
-                            aux_input: torch.Tensor = None,
-                            transition_mask: torch.Tensor = None) -> Dict[str, torch.Tensor]:
-        """
-        Initialize the state to be passed to the decoder at the first decoding time step.
-        """
-        batch_size, memory_len, mem_span_len = tok_memory_mask.size()
-        # Prepend the end embedding to the memory so that the model
-        # can terminate the decoding by attend on the end vector
-        # shape: (batch_size, 1, 1, encoder_output_dim) -> (batch_size, 1, mem_span_len, encoder_output_dim)
-        # shape: (batch_size, 1+memory_len, mem_span_len, encoder_output_dim)
-        prepend = self._end_embedding.expand(batch_size, self.encoder_output_dim)[:, None, None, :]
-        prepend = F.pad(prepend, (0, 0, 0, mem_span_len - 1), 'constant', 0)
-        tok_memory = torch.cat([prepend, tok_memory], dim=1)
-        # The tok memory mask also need to be prepended
-        # shape: (batch_size, 1, mem_span_len)
-        # shape: (batch_size, 1+memory_len, mem_span_len)
-        tok_mask_prepend = tok_memory_mask.new_zeros((batch_size, 1, mem_span_len))
-        tok_mask_prepend[:, :, 0] = 1
-        tok_memory_mask = torch.cat([tok_mask_prepend, tok_memory_mask], dim=1)
-        # The memory mask also need to be prepended,
-        # but here the mask is produced by tok_memory_mask, which alreadly has been prepended.
-        # As a result, we only consider changing the mask of eos according to ``predict_eos``
-        # shape: (batch_size, 1+memory_len)
-        memory_mask = (torch.sum(tok_memory_mask, dim=-1) >= 1).float()
-        if not self._predict_eos:
-            memory_maks[:, 0] = 0
-
-        # Initialize the decoder hidden state with zeros if not provided.
-        # shape: (batch_size, decoder_output_dim)
-        if init_hidden_state is None:
-            init_hidden_state = memory.new_zeros(batch_size, self.decoder_output_dim)
-
-        state = {"tok_memory":      tok_memory,
-                 "tok_memory_mask": tok_memory_mask,
-                 "memory_mask": memory_mask,
-                 "cell_hidden": init_hidden_state}
-
-        if self._cell == 'lstm':
-            # Initialize the decoder context with zeros. Only do it when the cell type is ``LSTMCell``
-            # shape: (batch_size, decoder_output_dim)
-            init_context = tok_memory.new_zeros(batch_size, self.decoder_output_dim)
-            state["cell_context"] = init_context
-
-        if not aux_input is None:
-            state['aux_input'] = aux_input
-
-        # If transition mask is provided, we also need to prepend ones on the row and column axis
-        # to account for the eos.
-        if not transition_mask is None:
-            # shape: (batch_size, 1+memory_len, 1+memory_len)
-            transition_mask = F.pad(transition_mask, (1, 0, 1, 0), 'constant', int(self._predict_eos))
-            state['transition_mask'] = transition_mask
-
-        return state
-
-    def _decoder_step(self,
-                      state: Dict[str, torch.Tensor],
-                      last_predictions: torch.Tensor = None,
-                      next_input: torch.Tensor = None) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
-        # shape: (group_size, memory_len, mem_span_len, encoder_output_dim)
-        tok_memory = state["tok_memory"]
-        # shape: (group_size, memory_len, mem_span_len)
-        tok_memory_mask = state["tok_memory_mask"].float()
-        # shape: (group_size, memory_len)
-        memory_mask = state["memory_mask"].float()
-        group_size, memory_len, mem_span_len, _ = tok_memory.size()
-
-        if not last_predictions is None:
-            # key ``memory`` should have been set at timestep > 0
-            # shape: (group_size, memory_len, encoder_output_dim)
-            memory = state["memory"]
-            # We obtain the next input by last predictions
-            # The last predictions represent the indices pointing to encoder outputs.
-            # We gather the encoder outputs w.r.t the last predictions and take them as the next inputs
-            # shape: (group_size, 1, encoder_output_dim)
-            expand_last_predictions = last_predictions[:, None, None].expand(group_size, 1, self.encoder_output_dim)
-            # shape: (group_size, encoder_output_dim)
-            decoder_input = torch.gather(memory, 1, expand_last_predictions).squeeze(1)
-
-            # We also gather the transition restriction, if provided, w.r.t the last predictions,
-            # and apply on the memory mask.
-            # shape: (group_size, memory_len)
-            if not state.get("transition_mask", None) is None:
-                # shape: (group_size, 1, memory_len)
-                expand_last_predictions = last_predictions[:, None, None].expand(group_size, 1, memory_len)
-                transition_mask = torch.gather(state["transition_mask"], 1, expand_last_predictions).squeeze(1)
-                memory_mask = memory_mask * transition_mask.float()
-        else:
-            # We use ``next input`` as the next decoder input. This condition is use for the initial step.
-            assert not next_input is None
-            # shape: (group_size, decoder_input_dim)
-            decoder_input = next_input
-
-        # We apply another mask to prevent the model repeatedly selecting the same memory to point to.
-        if "hist_predictions" in state:
-            hist_attention = tok_memory.new_zeros((group_size, memory_len))
-            hist_attention.scatter_(1, state["hist_predictions"], 1.)
-            memory_mask = memory_mask * (1. - hist_attention)
-
-        # shape: (group_size, encoder_output_dim + aux_input_dim)
-        if not state.get('aux_input', None) is None:
-            decoder_input = torch.cat((decoder_input, state['aux_input']), -1)
-        # shape: (group_size, decoder_input_dim)
-        projected_decoder_input = self._input_projection_layer(decoder_input)
-
-        if self._cell == 'lstm':
-            # shape: (group_size, decoder_output_dim), (group_size, decoder_output_dim)
-            next_cell_hidden, next_cell_context = self._decoder_cell(
-                    projected_decoder_input,
-                    (state["cell_hidden"], state["cell_context"]))
-        elif self._cell == 'gru':
-            # shape: (group_size, decoder_output_dim)
-            next_cell_hidden = self._decoder_cell(
-                    projected_decoder_input,
-                    state["cell_hidden"])
-        if not last_predictions is None:
-            # Here we are finding any sequences where we predicted the end token in
-            # the previous timestep and directly passing through its hidden state.
-            # shape: (group_size, decoder_output_dim)
-            expand_last_predictions = last_predictions.unsqueeze(-1).expand(
-                    group_size,
-                    self.decoder_output_dim
-            )
-            # shape: (group_size, decoder_output_dim)
-            state["cell_hidden"] = torch.where(
-                    expand_last_predictions == self._eos_idx,
-                    state["cell_hidden"],
-                    next_cell_hidden
-            )
-            if self._cell == 'lstm':
-                # shape: (group_size, decoder_output_dim)
-                state["cell_context"] = torch.where(
-                        expand_last_predictions == self._eos_idx,
-                        state["cell_context"],
-                        next_cell_context
-                )
-
-        # Compute the alignments scores w.r.t the each token embeddings
-        # shape: (group_size, 1, decoder_output_dim)
-        query = state["cell_hidden"].unsqueeze(1)
-        flatten_tok_memory = tok_memory.reshape(group_size, memory_len*mem_span_len, -1)
-        # shape: (group_size, memory_len, mem_span_len)
-        tok_attention_matrix = self._fg_attention(query, flatten_tok_memory).\
-                squeeze(1).\
-                reshape(group_size, memory_len, mem_span_len)
-        tok_attention_probs = util.masked_softmax(tok_attention_matrix, tok_memory_mask)
-        # shape: (group_size, memory_len)
-        state['memory'] = util.weighted_sum(tok_memory, tok_attention_probs)
-        # shape: (group_size, memory_len)
-        attention_matrix = self._attention(query, state['memory']).squeeze(1)
-        attention_logprobs = util.masked_log_softmax(attention_matrix, memory_mask)
-        #attention_probs = util.masked_softmax(attention_matrix, memory_mask)
-        return state, attention_logprobs#, attention_probs
+# class AdpMemPointerNetDecoder(torch.nn.Module):
+#     """
+#     Most of the codes are coming from the decoding part of CopyNetSeq2Seq from AllenNLP
+#     Parameters
+#     ----------
+#     attention : ``MatrixAttention``, required
+#         This is used to get the alignment scores between decoder hidden state and the memory.
+#     memory_dim : ``int``, required
+#         The embedding dimension of the encoder outputs (memory).
+#     aux_input_dim : ``int``, optional
+#         The embedding dimension of the auxilary decoder input.
+#     beam_size : ``int``, optional (default: 3)
+#         Beam width to use for beam search prediction.
+#     max_decoding_steps : ``int``, optional (default: 5)
+#         Maximum sequence length of target predictions.
+#     """
+# 
+#     def __init__(self,
+#                  attention: MatrixAttention,
+#                  fg_attention: MatrixAttention,
+#                  memory_dim: int,
+#                  aux_input_dim: int = None,
+#                  train_helper='sample',
+#                  val_helper='beamsearch',
+#                  beam_size: int = 3,
+#                  max_decoding_steps: int = 5,
+#                  predict_eos: bool = True,
+#                  cell: str = 'lstm') -> None:
+#         super(AdpMemPointerNetDecoder, self).__init__()                
+#         # Decoder output dim needs to be the same as the encoder output dim since we initialize the
+#         # hidden state of the decoder with the final hidden state of the encoder.
+#         # We arbitrarily set the decoder's input dimension to be the same as the output dimension.
+#         self.encoder_output_dim = memory_dim
+#         self.decoder_output_dim = memory_dim
+#         self.decoder_input_dim = memory_dim
+#         self.aux_input_dim = aux_input_dim or 0
+# 
+#         # The decoder input will be the embedding vector that the decoder is pointing to 
+#         # in the memory in the previous timestep concatenated with some auxiliary input if provided.
+#         self._attention = attention
+#         self._fg_attention = fg_attention
+#         self._input_projection_layer = Linear(
+#                 self.encoder_output_dim + self.aux_input_dim,
+#                 self.decoder_input_dim)
+# 
+#         # We then run the projected decoder input through an LSTM cell to produce
+#         # the next hidden state.
+#         self._cell = cell
+#         if cell == 'lstm':
+#             self._decoder_cell = LSTMCell(self.decoder_input_dim, self.decoder_output_dim)
+#         elif cell == 'gru':
+#             self._decoder_cell = GRUCell(self.decoder_input_dim, self.decoder_output_dim)
+# 
+#         # At initial step we take the trainable ``start embedding`` as input
+#         self._start_embedding = nn.Parameter(torch.Tensor(1, self.decoder_input_dim))
+#         nn.init.normal_(self._start_embedding, std=0.01)
+# 
+#         # The end embedding which we prepend to the memmory so that the pointernet
+#         # can learn to terminate the prediction if necessary
+#         self._end_embedding = nn.Parameter(torch.Tensor(1, self.encoder_output_dim), requires_grad=True)
+#         nn.init.normal_(self._end_embedding, std=0.01)
+# 
+#         # We set the eos index to zero since the end embedding is prepended to the memory
+#         self._eos_idx = 0
+#         self._predict_eos = predict_eos
+# 
+#         def get_helper(helper_type):
+#             if helper_type == 'teacher_forcing':
+#                 return TeacherForcingHelper(eos_idx=self._eos_idx,
+#                                             max_steps=max_decoding_steps)
+#             elif helper_type == 'sample':
+#                 return SamplingHelper(eos_idx=self._eos_idx,
+#                                       max_steps=max_decoding_steps)
+#             elif helper_type == 'greedy':
+#                 return GreedyHelper(eos_idx=self._eos_idx,
+#                                     max_steps=max_decoding_steps)
+#             elif helper_type == 'beamsearch':
+#                 return BeamSearchHelper(beam_size=beam_size,
+#                                         eos_idx=self._eos_idx,
+#                                         max_steps=max_decoding_steps)
+#             else:
+#                 raise ValueError("Unsupported Decoding Helper!")
+#         # Training decoding helper
+#         self._train_helper_type = train_helper
+#         self._train_decoding_helper = get_helper(train_helper)
+#         # At prediction time, we'll use a beam search to find the best target sequence.
+#         self._eval_helper_type = val_helper
+#         self._eval_decoding_helper = get_helper(val_helper)
+# 
+#     @overrides
+#     def forward(self,  # type: ignore
+#                 memory: torch.Tensor,
+#                 memory_mask: torch.Tensor,
+#                 init_hidden_state: torch.Tensor = None,
+#                 aux_input: torch.Tensor = None,
+#                 transition_mask: torch.Tensor = None,
+#                 labels: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+#         # pylint: disable=arguments-differ
+#         """
+#         Make foward pass with decoder logic for producing the entire target sequence.
+#         Parameters
+#         ----------
+#         memory : ``torch.FloatTensor``, required
+#             The output of an encoder. Shape: ``[batch_size, memory_len, mem_span_length, encoder_output_dim]``
+#         memory_mask : ``torch.FloatTensor``, required
+#             The mask of the encoder output. Shape: ``[batch_size, memory_len, mem_span_length]``
+#         init_hidden_state : ``torch.FloatTensor``, optional
+#             The initial hidden state for the decoder cell. Shape: ``[batch_size, decoder_output_dim]``.
+#             If not provided, the hidden state will be initialized with zero.
+#         aux_input : ``torch.FloatTensor``, optional
+#             The auxilary information that will be feed to the deocder in every step.
+#             Shape: ``[batch_size, aux_input_dim]``.
+#         transition_mask : ``torch.FloatTensor``, optional
+#             The mask for restricting the action space. Shape: ``[batch_size, memory_len, memory_len]``
+#         labels : ``torch.IntTensor``, optional
+#             The true labels for teacher forcing. Shape: ``[batch_size, decoding_len]``
+#         Returns
+#         -------
+#         Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+#         """
+#         batch_size = memory.size(0)
+#         start_state = self._init_decoder_state(memory, memory_mask, init_hidden_state, aux_input, transition_mask)
+#         # shape: (batch_size, decoder_input_dim)
+#         start_embedding = self._start_embedding.expand(batch_size, self.decoder_input_dim)
+#         if self.training:
+#             helper = self._train_decoding_helper
+#         else:
+#             helper = self._eval_decoding_helper
+#         # shape (all_predictions): (batch_size, K, num_decoding_steps)
+#         # shape (all_logprobs): (batch_size, K, num_decoding_steps)
+#         # shape (seq_logprobs): (batch_size, K)
+#         # shape (final_hidden): (batch_size, K, decoder_output_dim)
+#         all_predictions, all_logprobs, seq_logprobs, final_hidden = helper.search(
+#                 start_embedding, start_state, self._decoder_step, labels)
+#         # add a extra beam dimension if needed
+#         if all_predictions.dim() == 2:
+#             all_predictions = all_predictions.unsqueeze(1)
+#             all_logprobs = all_logprobs.unsqueeze(1)
+#             seq_logprobs = seq_logprobs.unsqueeze(1)
+#             final_hidden = final_hidden.unsqueeze(1)
+#         return all_predictions, all_logprobs, seq_logprobs, final_hidden
+# 
+#     def _init_decoder_state(self,
+#                             tok_memory: torch.Tensor,
+#                             tok_memory_mask: torch.Tensor,
+#                             init_hidden_state: torch.Tensor = None,
+#                             aux_input: torch.Tensor = None,
+#                             transition_mask: torch.Tensor = None) -> Dict[str, torch.Tensor]:
+#         """
+#         Initialize the state to be passed to the decoder at the first decoding time step.
+#         """
+#         batch_size, memory_len, mem_span_len = tok_memory_mask.size()
+#         # Prepend the end embedding to the memory so that the model
+#         # can terminate the decoding by attend on the end vector
+#         # shape: (batch_size, 1, 1, encoder_output_dim) -> (batch_size, 1, mem_span_len, encoder_output_dim)
+#         # shape: (batch_size, 1+memory_len, mem_span_len, encoder_output_dim)
+#         prepend = self._end_embedding.expand(batch_size, self.encoder_output_dim)[:, None, None, :]
+#         prepend = F.pad(prepend, (0, 0, 0, mem_span_len - 1), 'constant', 0)
+#         tok_memory = torch.cat([prepend, tok_memory], dim=1)
+#         # The tok memory mask also need to be prepended
+#         # shape: (batch_size, 1, mem_span_len)
+#         # shape: (batch_size, 1+memory_len, mem_span_len)
+#         tok_mask_prepend = tok_memory_mask.new_zeros((batch_size, 1, mem_span_len))
+#         tok_mask_prepend[:, :, 0] = 1
+#         tok_memory_mask = torch.cat([tok_mask_prepend, tok_memory_mask], dim=1)
+#         # The memory mask also need to be prepended,
+#         # but here the mask is produced by tok_memory_mask, which alreadly has been prepended.
+#         # As a result, we only consider changing the mask of eos according to ``predict_eos``
+#         # shape: (batch_size, 1+memory_len)
+#         memory_mask = (torch.sum(tok_memory_mask, dim=-1) >= 1).float()
+#         if not self._predict_eos:
+#             memory_mask[:, 0] = 0
+# 
+#         # Initialize the decoder hidden state with zeros if not provided.
+#         # shape: (batch_size, decoder_output_dim)
+#         if init_hidden_state is None:
+#             init_hidden_state = memory.new_zeros(batch_size, self.decoder_output_dim)
+# 
+#         state = {"tok_memory":      tok_memory,
+#                  "tok_memory_mask": tok_memory_mask,
+#                  "memory_mask": memory_mask,
+#                  "cell_hidden": init_hidden_state}
+# 
+#         if self._cell == 'lstm':
+#             # Initialize the decoder context with zeros. Only do it when the cell type is ``LSTMCell``
+#             # shape: (batch_size, decoder_output_dim)
+#             init_context = tok_memory.new_zeros(batch_size, self.decoder_output_dim)
+#             state["cell_context"] = init_context
+# 
+#         if not aux_input is None:
+#             state['aux_input'] = aux_input
+# 
+#         # If transition mask is provided, we also need to prepend ones on the row and column axis
+#         # to account for the eos.
+#         if not transition_mask is None:
+#             # shape: (batch_size, 1+memory_len, 1+memory_len)
+#             transition_mask = F.pad(transition_mask, (1, 0, 1, 0), 'constant', int(self._predict_eos))
+#             state['transition_mask'] = transition_mask
+# 
+#         return state
+# 
+#     def _decoder_step(self,
+#                       state: Dict[str, torch.Tensor],
+#                       last_predictions: torch.Tensor = None,
+#                       next_input: torch.Tensor = None) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
+#         # shape: (group_size, memory_len, mem_span_len, encoder_output_dim)
+#         tok_memory = state["tok_memory"]
+#         # shape: (group_size, memory_len, mem_span_len)
+#         tok_memory_mask = state["tok_memory_mask"].float()
+#         # shape: (group_size, memory_len)
+#         memory_mask = state["memory_mask"].float()
+#         group_size, memory_len, mem_span_len, _ = tok_memory.size()
+# 
+#         if not last_predictions is None:
+#             # key ``memory`` should have been set at timestep > 0
+#             # shape: (group_size, memory_len, encoder_output_dim)
+#             memory = state["memory"]
+#             # We obtain the next input by last predictions
+#             # The last predictions represent the indices pointing to encoder outputs.
+#             # We gather the encoder outputs w.r.t the last predictions and take them as the next inputs
+#             # shape: (group_size, 1, encoder_output_dim)
+#             expand_last_predictions = last_predictions[:, None, None].expand(group_size, 1, self.encoder_output_dim)
+#             # shape: (group_size, encoder_output_dim)
+#             decoder_input = torch.gather(memory, 1, expand_last_predictions).squeeze(1)
+# 
+#             # We also gather the transition restriction, if provided, w.r.t the last predictions,
+#             # and apply on the memory mask.
+#             # shape: (group_size, memory_len)
+#             if not state.get("transition_mask", None) is None:
+#                 # shape: (group_size, 1, memory_len)
+#                 expand_last_predictions = last_predictions[:, None, None].expand(group_size, 1, memory_len)
+#                 transition_mask = torch.gather(state["transition_mask"], 1, expand_last_predictions).squeeze(1)
+#                 memory_mask = memory_mask * transition_mask.float()
+#         else:
+#             # We use ``next input`` as the next decoder input. This condition is use for the initial step.
+#             assert not next_input is None
+#             # shape: (group_size, decoder_input_dim)
+#             decoder_input = next_input
+# 
+#         # We apply another mask to prevent the model repeatedly selecting the same memory to point to.
+#         if "hist_predictions" in state:
+#             hist_attention = tok_memory.new_zeros((group_size, memory_len))
+#             hist_attention.scatter_(1, state["hist_predictions"], 1.)
+#             memory_mask = memory_mask * (1. - hist_attention)
+# 
+#         # shape: (group_size, encoder_output_dim + aux_input_dim)
+#         if not state.get('aux_input', None) is None:
+#             decoder_input = torch.cat((decoder_input, state['aux_input']), -1)
+#         # shape: (group_size, decoder_input_dim)
+#         projected_decoder_input = self._input_projection_layer(decoder_input)
+# 
+#         if self._cell == 'lstm':
+#             # shape: (group_size, decoder_output_dim), (group_size, decoder_output_dim)
+#             next_cell_hidden, next_cell_context = self._decoder_cell(
+#                     projected_decoder_input,
+#                     (state["cell_hidden"], state["cell_context"]))
+#         elif self._cell == 'gru':
+#             # shape: (group_size, decoder_output_dim)
+#             next_cell_hidden = self._decoder_cell(
+#                     projected_decoder_input,
+#                     state["cell_hidden"])
+#         if not last_predictions is None:
+#             # Here we are finding any sequences where we predicted the end token in
+#             # the previous timestep and directly passing through its hidden state.
+#             # shape: (group_size, decoder_output_dim)
+#             expand_last_predictions = last_predictions.unsqueeze(-1).expand(
+#                     group_size,
+#                     self.decoder_output_dim
+#             )
+#             # shape: (group_size, decoder_output_dim)
+#             state["cell_hidden"] = torch.where(
+#                     expand_last_predictions == self._eos_idx,
+#                     state["cell_hidden"],
+#                     next_cell_hidden
+#             )
+#             if self._cell == 'lstm':
+#                 # shape: (group_size, decoder_output_dim)
+#                 state["cell_context"] = torch.where(
+#                         expand_last_predictions == self._eos_idx,
+#                         state["cell_context"],
+#                         next_cell_context
+#                 )
+# 
+#         # Compute the alignments scores w.r.t the each token embeddings
+#         # shape: (group_size, 1, decoder_output_dim)
+#         query = state["cell_hidden"].unsqueeze(1)
+#         flatten_tok_memory = tok_memory.reshape(group_size, memory_len*mem_span_len, -1)
+#         # shape: (group_size, memory_len, mem_span_len)
+#         tok_attention_matrix = self._fg_attention(query, flatten_tok_memory).\
+#                 squeeze(1).\
+#                 reshape(group_size, memory_len, mem_span_len)
+#         tok_attention_probs = util.masked_softmax(tok_attention_matrix, tok_memory_mask)
+#         # shape: (group_size, memory_len)
+#         state['memory'] = util.weighted_sum(tok_memory, tok_attention_probs)
+#         # shape: (group_size, memory_len)
+#         attention_matrix = self._attention(query, state['memory']).squeeze(1)
+#         attention_logprobs = util.masked_log_softmax(attention_matrix, memory_mask)
+#         #attention_probs = util.masked_softmax(attention_matrix, memory_mask)
+#         return state, attention_logprobs#, attention_probs
+# 
+# 
+# class CovPointerNetDecoder(torch.nn.Module):
+#     """
+#     Most of the codes are coming from the decoding part of CopyNetSeq2Seq from AllenNLP
+#     Parameters
+#     ----------
+#     attention : ``MatrixAttention``, required
+#         This is used to get the alignment scores between decoder hidden state and the memory.
+#     memory_dim : ``int``, required
+#         The embedding dimension of the encoder outputs (memory).
+#     aux_input_dim : ``int``, optional
+#         The embedding dimension of the auxilary decoder input.
+#     beam_size : ``int``, optional (default: 3)
+#         Beam width to use for beam search prediction.
+#     max_decoding_steps : ``int``, optional (default: 5)
+#         Maximum sequence length of target predictions.
+#     """
+# 
+#     def __init__(self,
+#                  attention: MatrixAttention,
+#                  memory_dim: int,
+#                  aux_input_dim: int = None,
+#                  train_helper='sample',
+#                  val_helper='beamsearch',
+#                  beam_size: int = 3,
+#                  max_decoding_steps: int = 5,
+#                  predict_eos: bool = True,
+#                  cell: str = 'lstm') -> None:
+#         super(CovPointerNetDecoder, self).__init__()                
+#         # Decoder output dim needs to be the same as the encoder output dim since we initialize the
+#         # hidden state of the decoder with the final hidden state of the encoder.
+#         # We arbitrarily set the decoder's input dimension to be the same as the output dimension.
+#         self.encoder_output_dim = memory_dim
+#         self.decoder_output_dim = memory_dim
+#         self.decoder_input_dim = memory_dim
+#         self.aux_input_dim = aux_input_dim or 0
+# 
+#         # The decoder input will be the embedding vector that the decoder is pointing to 
+#         # in the memory in the previous timestep concatenated with some auxiliary input if provided.
+#         # The input will also be concatenated with the not-included question info.
+#         self._attention = attention
+#         self._input_projection_layer = Linear(
+#                 self.encoder_output_dim*2 + self.aux_input_dim,
+#                 self.decoder_input_dim)
+# 
+#         # We then run the projected decoder input through an LSTM cell to produce
+#         # the next hidden state.
+#         self._cell = cell
+#         if cell == 'lstm':
+#             self._decoder_cell = LSTMCell(self.decoder_input_dim, self.decoder_output_dim)
+#         elif cell == 'gru':
+#             self._decoder_cell = GRUCell(self.decoder_input_dim, self.decoder_output_dim)
+# 
+#         # At initial step we take the trainable ``start embedding`` as input
+#         self._start_embedding = nn.Parameter(torch.Tensor(1, self.decoder_input_dim))
+#         nn.init.normal_(self._start_embedding, std=0.01)
+# 
+#         # The end embedding which we prepend to the memmory so that the pointernet
+#         # can learn to terminate the prediction if necessary
+#         self._end_embedding = nn.Parameter(torch.Tensor(1, self.encoder_output_dim), requires_grad=True)
+#         nn.init.normal_(self._end_embedding, std=0.01)
+# 
+#         # We set the eos index to zero since the end embedding is prepended to the memory
+#         self._eos_idx = 0
+#         self._predict_eos = predict_eos
+# 
+#         def get_helper(helper_type):
+#             if helper_type == 'teacher_forcing':
+#                 return TeacherForcingHelper(eos_idx=self._eos_idx,
+#                                             max_steps=max_decoding_steps)
+#             elif helper_type == 'sample':
+#                 return SamplingHelper(eos_idx=self._eos_idx,
+#                                       max_steps=max_decoding_steps)
+#             elif helper_type == 'greedy':
+#                 return GreedyHelper(eos_idx=self._eos_idx,
+#                                     max_steps=max_decoding_steps)
+#             elif helper_type == 'beamsearch':
+#                 return BeamSearchHelper(beam_size=beam_size,
+#                                         eos_idx=self._eos_idx,
+#                                         max_steps=max_decoding_steps)
+#             else:
+#                 raise ValueError("Unsupported Decoding Helper!")
+#         # Training decoding helper
+#         self._train_helper_type = train_helper
+#         self._train_decoding_helper = get_helper(train_helper)
+#         # At prediction time, we'll use a beam search to find the best target sequence.
+#         self._eval_helper_type = val_helper
+#         self._eval_decoding_helper = get_helper(val_helper)
+# 
+#     @overrides
+#     def forward(self,  # type: ignore
+#                 memory: torch.Tensor,
+#                 memory_mask: torch.Tensor,
+#                 init_hidden_state: torch.Tensor = None,
+#                 q_tok_embs: torch.Tensor = None,
+#                 q_tok_mask: torch.Tensor = None,
+#                 q_cov_vecs: torch.Tensor = None,
+#                 aux_input: torch.Tensor = None,
+#                 transition_mask: torch.Tensor = None,
+#                 labels: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+#         # pylint: disable=arguments-differ
+#         """
+#         Make foward pass with decoder logic for producing the entire target sequence.
+#         Parameters
+#         ----------
+#         memory : ``torch.FloatTensor``, required
+#             The output of an encoder. Shape: ``[batch_size, memory_len, encoder_output_dim]``
+#         memory_mask : ``torch.FloatTensor``, required
+#             The mask of the encoder output. Shape: ``[batch_size, memory_len]``
+#         init_hidden_state : ``torch.FloatTensor``, optional
+#             The initial hidden state for the decoder cell. Shape: ``[batch_size, decoder_output_dim]``.
+#             If not provided, the hidden state will be initialized with zero.
+#         q_tok_embs : `torch.FloatTensor`, optional
+#             The embedding of question tokens.
+#             Shape: ``[batch_size, q_len, encoder_output_dim]``
+#         q_tok_mask : `torch.FloatTensor`, optional
+#             The mask of question tokens.
+#             Shape: ``[batch_size, q_len]``
+#         q_cov_vecs : `torch.FloatTensor`, optional
+#             The coverage vector of the question corresponding to each sentence.
+#             Shape: ``[batch_size, memory_len, q_len]``
+#         aux_input : ``torch.FloatTensor``, optional
+#             The auxilary information that will be feed to the deocder in every step.
+#             Shape: ``[batch_size, aux_input_dim]``.
+#         transition_mask : ``torch.FloatTensor``, optional
+#             The mask for restricting the action space. Shape: ``[batch_size, memory_len, memory_len]``
+#         labels : ``torch.IntTensor``, optional
+#             The true labels for teacher forcing. Shape: ``[batch_size, decoding_len]``
+#         Returns
+#         -------
+#         Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+#         """
+#         batch_size = memory.size(0)
+#         start_state = self._init_decoder_state(memory, memory_mask, init_hidden_state,
+#                                                q_tok_embs, q_tok_mask, q_cov_vecs,
+#                                                aux_input, transition_mask)
+#         # shape: (batch_size, decoder_input_dim)
+#         start_embedding = self._start_embedding.expand(batch_size, self.decoder_input_dim)
+#         if self.training:
+#             helper = self._train_decoding_helper
+#         else:
+#             helper = self._eval_decoding_helper
+#         # shape (all_predictions): (batch_size, K, num_decoding_steps)
+#         # shape (all_logprobs): (batch_size, K, num_decoding_steps)
+#         # shape (seq_logprobs): (batch_size, K)
+#         # shape (final_hidden): (batch_size, K, decoder_output_dim)
+#         all_predictions, all_logprobs, seq_logprobs, final_hidden = helper.search(
+#                 start_embedding, start_state, self._decoder_step, labels)
+#         # add a extra beam dimension if needed
+#         if all_predictions.dim() == 2:
+#             all_predictions = all_predictions.unsqueeze(1)
+#             all_logprobs = all_logprobs.unsqueeze(1)
+#             seq_logprobs = seq_logprobs.unsqueeze(1)
+#             final_hidden = final_hidden.unsqueeze(1)
+#         return all_predictions, all_logprobs, seq_logprobs, final_hidden
+# 
+#     def _init_decoder_state(self,
+#                             memory: torch.Tensor,
+#                             memory_mask: torch.Tensor,
+#                             init_hidden_state: torch.Tensor = None,
+#                             q_tok_embs: torch.Tensor = None,
+#                             q_tok_mask: torch.Tensor = None,
+#                             q_cov_vecs: torch.Tensor = None,
+#                             aux_input: torch.Tensor = None,
+#                             transition_mask: torch.Tensor = None) -> Dict[str, torch.Tensor]:
+#         """
+#         Initialize the state to be passed to the decoder at the first decoding time step.
+#         """
+#         batch_size, memory_len = memory_mask.size()
+#         # Prepend the end embedding to the memory so that the model
+#         # can terminate the decoding by attend on the end vector
+#         # shape: (batch_size, 1, encoder_output_dim)
+#         # shape: (batch_size, 1+memory_len, encoder_output_dim)
+#         prepend = self._end_embedding.expand(batch_size, self.encoder_output_dim).unsqueeze(1)
+#         memory = torch.cat([prepend, memory], dim=1)
+#         # The memory mask also need to be prepended
+#         # If ``predict_eos`` prepend ones, else zeros
+#         # shape: (batch_size, 1)
+#         # shape: (batch_size, 1+memory_len)
+#         if self._predict_eos:
+#             mask_prepend = memory_mask.new_ones((batch_size, 1))
+#         else:
+#             mask_prepend = memory_mask.new_zeros((batch_size, 1))
+#         memory_mask = torch.cat([mask_prepend, memory_mask], dim=1)
+#         # The ``q_cov_vecs`` also needs to be prepended
+#         # shape: (batch_size, 1+memory_len, q_len)
+#         q_cov_vecs = F.pad(q_cov_vecs, (0, 0, 1, 0), 'constant', 0)
+# 
+#         # Initialize the decoder hidden state with zeros if not provided.
+#         # shape: (batch_size, decoder_output_dim)
+#         if init_hidden_state is None:
+#             init_hidden_state = memory.new_zeros(batch_size, self.decoder_output_dim)
+# 
+#         state = {"memory":      memory,
+#                  "memory_mask": memory_mask,
+#                  "q_tok_embs": q_tok_embs,
+#                  "q_tok_mask": q_tok_mask,
+#                  "cov_vecs":  q_cov_vecs,
+#                  "accu_cov_vec": memory.new_zeros(batch_size, q_cov_vecs.size(-1)),
+#                  "cell_hidden": init_hidden_state}
+# 
+#         if self._cell == 'lstm':
+#             # Initialize the decoder context with zeros. Only do it when the cell type is ``LSTMCell``
+#             # shape: (batch_size, decoder_output_dim)
+#             init_context = memory.new_zeros(batch_size, self.decoder_output_dim)
+#             state["cell_context"] = init_context
+# 
+#         if not aux_input is None:
+#             state['aux_input'] = aux_input
+# 
+#         # If transition mask is provided, we also need to prepend ones on the row and column axis
+#         # to account for the eos.
+#         if not transition_mask is None:
+#             # shape: (batch_size, 1+memory_len, 1+memory_len)
+#             transition_mask = F.pad(transition_mask, (1, 0, 1, 0), 'constant', int(self._predict_eos))
+#             state['transition_mask'] = transition_mask
+# 
+#         return state
+# 
+#     def _decoder_step(self,
+#                       state: Dict[str, torch.Tensor],
+#                       last_predictions: torch.Tensor = None,
+#                       next_input: torch.Tensor = None) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
+#         # shape: (group_size, memory_len, encoder_output_dim)
+#         memory = state["memory"]
+#         # shape: (group_size, memory_len)
+#         memory_mask = state["memory_mask"].float()
+#         # shape: (group_size, q_len, encoder_output_dim)
+#         q_tok_embs = state["q_tok_embs"]
+#         # shape: (group_size, q_len)
+#         q_tok_mask = state["q_tok_mask"]
+#         # shape: (group_size, memory_len, q_len)
+#         cov_vecs = state["cov_vecs"]
+#         # shape: (group_size, q_len)
+#         accu_cov_vec = state["accu_cov_vec"]
+#         group_size, memory_len, _ = memory.size()
+# 
+#         if not last_predictions is None:
+#             # We obtain the next input by last predictions
+#             # The last predictions represent the indices pointing to encoder outputs.
+#             # We gather the encoder outputs w.r.t the last predictions and take them as the next inputs
+#             # shape: (group_size, 1, encoder_output_dim)
+#             expand_last_predictions = last_predictions[:, None, None].expand(group_size, 1, self.encoder_output_dim)
+#             # shape: (group_size, encoder_output_dim)
+#             decoder_input = torch.gather(memory, 1, expand_last_predictions).squeeze(1)
+# 
+#             # We also gather the transition restriction, if provided, w.r.t the last predictions,
+#             # and apply on the memory mask.
+#             # shape: (group_size, memory_len)
+#             if not state.get("transition_mask", None) is None:
+#                 # shape: (group_size, 1, memory_len)
+#                 expand_last_predictions = last_predictions[:, None, None].expand(group_size, 1, memory_len)
+#                 transition_mask = torch.gather(state["transition_mask"], 1, expand_last_predictions).squeeze(1)
+#                 memory_mask = memory_mask * transition_mask.float()
+# 
+#             # We also gather the cov vector, and update the ``accu_cov_vec``
+#             # shape: (group_size, 1, q_len)
+#             expand_last_predictions = last_predictions[:, None, None].expand(group_size, 1, cov_vecs.size(-1))
+#             # shape: (group_size, q_len)
+#             cur_cov_vec = torch.gather(cov_vecs, 1, expand_last_predictions).squeeze(1)
+#             accu_cov_vec = (accu_cov_vec.byte() | cur_cov_vec.byte()).float()
+#             state["accu_cov_vec"] = accu_cov_vec
+#         else:
+#             # We use ``next input`` as the next decoder input. This condition is use for the initial step.
+#             assert not next_input is None
+#             # shape: (group_size, decoder_input_dim)
+#             decoder_input = next_input
+# 
+#         # add the not-included q info to input
+#         inv_cov_vec = (1. - accu_cov_vec) * q_tok_mask
+#         left_tok_num = torch.sum(inv_cov_vec, dim=1, keepdim=True)
+#         inv_cov_vec = (inv_cov_vec / (left_tok_num + (left_tok_num == 0).float())).unsqueeze(1)
+#         # shape: (group_size, encoder_output_dim)
+#         next_q_info = torch.bmm(inv_cov_vec, q_tok_embs).squeeze(1)
+#         decoder_input = torch.cat((decoder_input, next_q_info), -1)
+# 
+#         # We apply another mask to prevent the model repeatedly selecting the same memory to point to.
+#         if "hist_predictions" in state:
+#             hist_attention = memory.new_zeros((group_size, memory_len))
+#             hist_attention.scatter_(1, state["hist_predictions"], 1.)
+#             memory_mask = memory_mask * (1. - hist_attention)
+# 
+#         # shape: (group_size, encoder_output_dim + aux_input_dim)
+#         if not state.get('aux_input', None) is None:
+#             decoder_input = torch.cat((decoder_input, state['aux_input']), -1)
+#         # shape: (group_size, decoder_input_dim)
+#         projected_decoder_input = self._input_projection_layer(decoder_input)
+# 
+#         if self._cell == 'lstm':
+#             # shape: (group_size, decoder_output_dim), (group_size, decoder_output_dim)
+#             next_cell_hidden, next_cell_context = self._decoder_cell(
+#                     projected_decoder_input,
+#                     (state["cell_hidden"], state["cell_context"]))
+#         elif self._cell == 'gru':
+#             # shape: (group_size, decoder_output_dim)
+#             next_cell_hidden = self._decoder_cell(
+#                     projected_decoder_input,
+#                     state["cell_hidden"])
+#         if not last_predictions is None:
+#             # Here we are finding any sequences where we predicted the end token in
+#             # the previous timestep and directly passing through its hidden state.
+#             # shape: (group_size, decoder_output_dim)
+#             expand_last_predictions = last_predictions.unsqueeze(-1).expand(
+#                     group_size,
+#                     self.decoder_output_dim
+#             )
+#             # shape: (group_size, decoder_output_dim)
+#             state["cell_hidden"] = torch.where(
+#                     expand_last_predictions == self._eos_idx,
+#                     state["cell_hidden"],
+#                     next_cell_hidden
+#             )
+#             if self._cell == 'lstm':
+#                 # shape: (group_size, decoder_output_dim)
+#                 state["cell_context"] = torch.where(
+#                         expand_last_predictions == self._eos_idx,
+#                         state["cell_context"],
+#                         next_cell_context
+#                 )
+# 
+#         # Compute the alignments scores w.r.t the encoder outputs
+#         # shape: (group_size, 1, decoder_output_dim)
+#         query = state["cell_hidden"].unsqueeze(1)
+#         # shape: (group_size, memory_len)
+#         attention_matrix = self._attention(query, memory).squeeze(1)
+#         attention_logprobs = util.masked_log_softmax(attention_matrix, memory_mask)
+#         #attention_probs = util.masked_softmax(attention_matrix, memory_mask)
+#         return state, attention_logprobs#, attention_probs
