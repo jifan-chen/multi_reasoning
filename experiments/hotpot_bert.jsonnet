@@ -4,12 +4,15 @@
       "base_reader" : {
           "type": "hotpot_bert_chain",
           "lazy": true,
+          "para_limit": 500,
+          "wp_indexer_name": "bert",
           "token_indexers": {
             "bert": {
                 "type": "bert-pretrained",
                 "pretrained_model": "bert-large-uncased",
                 "do_lowercase": true,
-                "use_starting_offsets": true
+                "use_starting_offsets": true,
+                "truncate_long_sequences": false
             },
             "token_characters": {
               "type": "characters",
@@ -24,12 +27,15 @@
   "validation_dataset_reader": {
     "type": "hotpot_bert_chain",
     "lazy": true,
+    "para_limit": 500,
+    "wp_indexer_name": "bert",
     "token_indexers": {
       "bert": {
           "type": "bert-pretrained",
           "pretrained_model": "bert-large-uncased",
           "do_lowercase": true,
-          "use_starting_offsets": true
+          "use_starting_offsets": true,
+          "truncate_long_sequences": false
       },
       "token_characters": {
         "type": "characters",
@@ -56,12 +62,12 @@
 //  },
 
   "vocabulary": {
-    "directory_path": "/backup2/jfchen/data/hotpot/vocab/full",
+    "directory_path": "/scratch/cluster/j0717lin/data/hotpot/bert_base_vocabulary",
     "extend": false
-    },
+  },
 
-  "train_data_path": "/backup2/jfchen/data/hotpot/train/train_pred_chain_fine_tune/pred_train*.json",
-  "validation_data_path": "/backup2/jfchen/data/hotpot/dev/dev_distractor_pred_chain_fine_tune.json",
+  "train_data_path": "/scratch/cluster/j0717lin/multihopQA/multi_reasoning/save/bert_chain_extractor_sentence_2fold_new/train_pred_chain/pred_train*.json",
+  "validation_data_path": "/scratch/cluster/j0717lin/multihopQA/multi_reasoning/save/bert_chain_extractor_sentence_new/pred_dev_selected_oracle.json",
   //"test_data_path": std.extVar("NER_TEST_B_PATH"),
 
   "model": {
@@ -81,7 +87,7 @@
             "bert": {
                 "type": "bert-pretrained",
                 "requires_grad": true,
-                "pretrained_model": "/backup2/jfchen/data/bert/bert-large-uncased.tar.gz"
+                "pretrained_model": "bert-large-uncased"
             },
 
 //            "token_characters": {
@@ -153,16 +159,16 @@
 //      "warmup_steps": 100
 //    },
 
-    "moving_average":{
-      "type": "exponential",
-      "decay": 0.9999
-    },
+//    "moving_average":{
+//      "type": "exponential",
+//      "decay": 0.9999
+//    },
 
-    "validation_metric": "-loss",
-    "num_serialized_models_to_keep": 3,
-    "num_epochs": 75,
+    "validation_metric": "+f1",
+    "num_serialized_models_to_keep": 1,
+    "num_epochs": 15,
     "grad_norm": 5.0,
-    "patience": 100,
+    "patience": 10,
     "cuda_device": [0]
   }
 
