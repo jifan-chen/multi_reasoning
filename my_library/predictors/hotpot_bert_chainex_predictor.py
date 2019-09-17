@@ -30,7 +30,7 @@ def order2chain(order):
     return chain
 
 
-@Predictor.register('hotpot_predictor')
+@Predictor.register('hotpot_bert_chainex_predictor')
 class HotpotPredictor(Predictor):
     @overrides
     def _json_to_instance(self, hotpot_dict_instance: JsonDict) -> Instance:
@@ -53,17 +53,17 @@ class HotpotPredictor(Predictor):
             # get pred evdiences from sentences with top k ``gate_prob``
             gate_probs = output['gate_probs'][:num_sents]
             pred_chains = [[i] for i in sorted(range(num_sents), key=lambda x: gate_probs[x], reverse=True)[:10]]
-        return {'answer_texts': output['answer_texts'],
-                'best_span_str': output.get('best_span_str', None),
-                'best_span': output.get('best_span', None),
+        return {#'answer_texts': output['answer_texts'],
+                #'best_span_str': output.get('best_span_str', None),
+                #'best_span': output.get('best_span', None),
                 'pred_sent_labels': output.get('pred_sent_labels', None),
                 'pred_sent_orders': output.get('pred_sent_orders', None),
                 'pred_chains': pred_chains,
                 'possible_chain': output.get('evd_possible_chains', None),
                 'question_tokens': output['question_tokens'],
-                'passage_tokens': output['passage_tokens'],
-                'token_spans_sp': output['token_spans_sp'],
-                'token_spans_sent': output['token_spans_sent'],
+                'passage_sent_tokens': output['passage_sent_tokens'],
+                #'token_spans_sp': output['token_spans_sp'],
+                #'token_spans_sent': output['token_spans_sent'],
                 'sent_labels': output['sent_labels'],
                 'ans_sent_idxs': output.get('ans_sent_idxs', None),
                 '_id': output['_id']}

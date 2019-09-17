@@ -118,9 +118,9 @@ class DemoHotpotPredictor(Predictor):
             self._dataset_reader = dataset_reader.reader
         else:
             self._dataset_reader = dataset_reader
-        with open('/scratch/cluster/jfchen/jfchen/data/hotpot/train_selected_oracle/train0.json', 'r') as f:
+        with open('/scratch/cluster/j0717lin/data/hotpot/train_selected_oracle/train0.json', 'r') as f:
             train = json.load(f)
-        with open('/scratch/cluster/jfchen/jfchen/data/hotpot/dev/dev_selected_oracle.json', 'r') as f:
+        with open('/scratch/cluster/j0717lin/data/hotpot/dev/dev_selected_oracle.json', 'r') as f:
             dev = json.load(f)
         '''
         with open('/scratch/cluster/j0717lin/multihopQA/hotpot/dev/dev_distractor_chain_easy.json', 'r') as f:
@@ -220,7 +220,10 @@ class DemoHotpotPredictor(Predictor):
         if not coref_clusters is None:
             coref_clusters = {'coref clusters': {'document': passage_tokens, 'clusters': coref_clusters}}
         if not pred_sent_orders is None:
+            num_sents = len(output['sent_labels']) # for removing padding
             pred_chains = [order2chain(order) for order in pred_sent_orders]
+            pred_chains = [ch for ch in pred_chains if all(c < num_sents for c in ch)]
+            assert len(pred_chains) > 0, repr([order2chain(order) for order in pred_sent_orders]) + '\n' + 'num sents: %d' % num_sents + '\n%s' % output['_id']
             pred_chains_em = [chain_EM(chain, evd_possible_chains) for chain in pred_chains]
         print("fin:", time.time() - start_time)
         return {"doc":              passage_tokens,
