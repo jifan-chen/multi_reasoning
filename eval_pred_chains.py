@@ -38,6 +38,26 @@ def num_TP_q(chain, sp_list, q_lemmas, p_lemmas):
     #r = len(chain_toks & q_toks) / (len(q_toks) + 1e-13)
     #return 2 * p * r / (p + r + 1e-13)
 
+
+def get_necessary_info(article):
+    paragraphs = article['context']
+    answer_text = article['answer'].strip().replace("\n", "")
+    sp_set = set(list(map(tuple, article['supporting_facts'])))
+    sent_labels = []
+    ans_sent_idxs = []
+    for para in paragraphs:
+        cur_title, cur_para = para[0], para[1]
+        for sent_id, sent in enumerate(cur_para):
+            if (cur_title, sent_id) in sp_set:
+                if answer_text in sent:
+                    ans_sent_idxs.append(len(sent_labels))
+                sent_labels.append(1)
+            else:
+                sent_labels.append(0)
+    article['sent_labels'] = sent_labels
+    article['ans_sent_idxs'] = ans_sent_idxs
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='evaluate chain predictions')
     parser.add_argument('pred_path', type=str, help='path to prediction file')
@@ -68,6 +88,10 @@ if __name__ == '__main__':
                     res.append(json.loads(line))
             else:
                 res += json.load(f)
+    # get sent_labels, etc if needed. Here we assume the prediction is data file
+    if not 'sent_labels' in res[0]:
+        for r in res:
+            get_necessary_info(r)
     print("Number of instances:", len(res))
     print("Number of ids:", len(set([r['_id'] for r in res])))
     

@@ -83,8 +83,19 @@ def process_answer_spans(token_spans, token_spans_sp, answer_texts, passage_fiel
             fields['span_end'] = IndexField(-100, passage_field)
 
 
+def process_q_cov_vec(passage_tokens, question_tokens, token_spans_sent, fields):
+    cov_vecs = np.zeros((len(token_spans_sent), len(question_tokens)))
+    for s_idx, (s, e) in enumerate(token_spans_sent):
+        for q_t_idx, q_tok in enumerate(question_tokens):
+            if any([q_tok.text.lower() == t.text.lower() for t in passage_tokens[s:e+1]]):
+                cov_vecs[s_idx, q_t_idx] = 1
+    #fields['q_cov_vecs'] = ArrayField(cov_vecs, padding_value=0)
+    return cov_vecs
+
+
 def make_meta_data(passage_text, passage_offsets, question_tokens, passage_tokens, token_spans_sp, token_spans_sent,
                    sent_labels, answer_texts, evd_possible_chains, evd_possible_chains_, ans_sent_idxs, article_id):
+                   #q_cov_vecs):
     # 0 denotes eos, shifts by one
     if ans_sent_idxs is not None:
         ans_sent_idxs = [s_idx + 1 for s_idx in ans_sent_idxs if s_idx < len(sent_labels)]
@@ -95,6 +106,7 @@ def make_meta_data(passage_text, passage_offsets, question_tokens, passage_token
                 'token_spans_sent': token_spans_sent,
                 'sent_labels': sent_labels,
                 '_id': article_id}
+                #'q_cov_vecs': q_cov_vecs}
     if answer_texts:
         metadata['answer_texts'] = answer_texts
     if evd_possible_chains is not None:
@@ -169,10 +181,14 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
     sent_labels = sent_labels[:len(token_spans_sent)]
     process_answer_spans(token_spans, token_spans_sp, answer_texts, passage_field, para_limit, fields)
     evd_possible_chains_ = process_evidence_chains(evd_possible_chains, sent_labels_, fields)
+    #q_cov_vecs = process_q_cov_vec(passage_tokens, question_tokens, token_spans_sent, fields)
 
     metadata = make_meta_data(passage_text, passage_offsets, question_tokens, passage_tokens, token_spans_sp,
                               token_spans_sent, sent_labels, answer_texts, evd_possible_chains, evd_possible_chains_,
                               ans_sent_idxs, article_id)
+    #metadata = make_meta_data(passage_text, passage_offsets, question_tokens, passage_tokens, token_spans_sp,
+    #                          token_spans_sent, sent_labels, answer_texts, evd_possible_chains, evd_possible_chains_,
+    #                          ans_sent_idxs, article_id, q_cov_vecs)
     fields['metadata'] = MetadataField(metadata)
     return Instance(fields)
 
@@ -273,7 +289,8 @@ class HotpotDatasetReader(DatasetReader):
                 concat_article += sent
                 passage_tokens.extend(tokenized_sent)
 
-        span_starts = self.find_all_span_starts(answer_text, concat_article)
+        #span_starts = self.find_all_span_starts(answer_text, concat_article)
+        span_starts = [] if answer_text in ["yes", "no"] else self.find_all_span_starts(answer_text, concat_article)
         span_ends = [start + len(answer_text) for start in span_starts]
         sp_starts = [self.find_span_starts(s, concat_article) for s in supporting_facts]
         sp_ends = [start + len(span) for span, start in zip(supporting_facts, sp_starts)]
@@ -339,8 +356,11 @@ class HotpotDatasetReader(DatasetReader):
         token_spans_sent: List[Tuple[int, int]] = []
 
         for char_span_start, char_span_end in char_spans:
-            (span_start, span_end), error = util.char_span_to_token_span(passage_offsets,
-                                                                         (char_span_start, char_span_end))
+            try:
+                (span_start, span_end), error = util.char_span_to_token_span(passage_offsets,
+                                                                             (char_span_start, char_span_end))
+            except:
+                continue
             if error:
                 logger.debug("Passage: %s", passage_text)
                 logger.debug("Passage tokens: %s", passage_tokens)
