@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import time
 from rouge import Rouge
 from typing import Dict, List, Tuple, Any
 from collections import Counter
@@ -13,6 +14,8 @@ from allennlp.data.instance import Instance
 from allennlp.data.dataset_readers.reading_comprehension import util
 from allennlp.data.token_indexers import SingleIdTokenIndexer, TokenIndexer
 from allennlp.data.tokenizers import Token, Tokenizer, WordTokenizer
+
+from my_library.token_indexers.calc_wordpiece_limit import get_wp_limit
 
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 rouge = Rouge()
@@ -29,7 +32,9 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
                                         sent_labels: List[int] = None,
                                         answer_texts: List[str] = None,
                                         additional_metadata: Dict[str, Any] = None,
-                                        para_limit: int = 2250) -> Instance:
+                                        para_limit: int = 2250,
+                                        id_to_wordpiecelimit: Dict[str, int] = None,
+                                        wp_indexer_name: str = None) -> Instance:
     """
     Converts a question, a passage, and an optional answer (or answers) to an ``Instance`` for use
     in a reading comprehension model.
@@ -73,7 +78,14 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
     additional_metadata = additional_metadata or {}
     fields: Dict[str, Field] = {}
 
-    limit = len(question_passage_tokens) if para_limit > len(question_passage_tokens) else para_limit
+    if wp_indexer_name is None:
+        limit = len(question_passage_tokens) if para_limit > len(question_passage_tokens) else para_limit
+    else:
+        if not additional_metadata['_id'] in id_to_wordpiecelimit:
+            limit = get_wp_limit(question_passage_tokens, token_indexers[wp_indexer_name], limit=para_limit)
+            id_to_wordpiecelimit[additional_metadata['_id']] = limit
+        else:
+            limit = id_to_wordpiecelimit[additional_metadata['_id']]
     question_passage_tokens = question_passage_tokens[:limit]
 
     # This is separate so we can reference it later with a known type.
@@ -127,7 +139,7 @@ def make_reading_comprehension_instance(question_tokens: List[Token],
                     candidate_answers[(s, e)] = 0
             span_start, span_end = candidate_answers.most_common(1)[0][0]
 
-            if span_start > para_limit or span_end > para_limit:
+            if span_start >= limit or span_end >= limit:
                 # print('span_start, span_end:', span_start, span_end)
                 fields['span_start'] = IndexField(-100, question_passage_field)
                 fields['span_end'] = IndexField(-100, question_passage_field)
@@ -177,6 +189,9 @@ class HotpotDatasetReader(DatasetReader):
                  para_limit: int = 2250,
                  sent_limit: int = 70,
                  rerank_by_sp: bool = False,
+                 start_tokens: List[str] = ['[CLS]'],
+                 sep_tokens: List[str] = ['[SEP]'],
+                 wp_indexer_name: str = None,
                  lazy: bool = False) -> None:
         super().__init__(lazy)
         self._tokenizer = tokenizer or WordTokenizer()
@@ -187,6 +202,10 @@ class HotpotDatasetReader(DatasetReader):
         self.count = 0
         self._answer_count = 0.0
         self._avg_chain_length = 0
+        self._start_tokens = start_tokens
+        self._sep_tokens = sep_tokens
+        self._id_to_wordpiecelimit = {}
+        self._wp_indexer_name = wp_indexer_name
 
     @staticmethod
     def find_all_span_starts(answer, context):
@@ -303,9 +322,9 @@ class HotpotDatasetReader(DatasetReader):
             else article['pred_chains']
         pred_chains_ques = self.chain_rerank_by_question(article['pred_chains'], question_text, answer_text, all_sents) if self._rerank_by_sp \
             else article['pred_chains']
-        combined_chains_id = self.get_topK_chains(pred_chains_ques, top_k=1, total_num_chains=8)
+        combined_chains_id = self.get_topK_chains(pred_chains_ques, top_k=3, total_num_chains=5)
         if len(combined_chains_id) == 0:
-            combined_chains_id = self.get_topK_chains(pred_chains_ques, top_k=2, total_num_chains=7)
+            combined_chains_id = self.get_topK_chains(pred_chains_ques, top_k=3, total_num_chains=5)
         # combined_chains_id_sp = self.get_topK_chains(pred_chains_sp, top_k=2, total_num_chains=5)
         for id in combined_chains_id:
             if answer_text in all_sents[id]:
@@ -316,16 +335,23 @@ class HotpotDatasetReader(DatasetReader):
         # print('by sp:', combined_chains_id_sp)
         # print('sp set:', sp_facts_id)
         # input()
+        for tok in self._start_tokens:
+            question_passage_tokens.append(Token(text=tok, idx=len(concat_qp)))
+            question_passage_offsets.append((len(concat_qp), len(concat_qp)+len(tok)))
+            concat_qp += tok
+
         tokenized_ques = self._tokenizer.tokenize(question_text)
-        tokenized_ques = [Token(text=tk.text, idx=tk.idx + 1) for tk in tokenized_ques]
-        tokenized_ques.insert(0, Token(text='[CLS]', idx=0))
-        tokenized_ques.append(Token(text='[SEP]', idx=tokenized_ques[-1].idx + 1))
-        appended_question_text = "[CLS]{}[SEP]".format(question_text)
-        sent_offset = [(tk.idx + len(concat_qp),
-                        tk.idx + len(tk.text) + len(concat_qp)) for tk in tokenized_ques]
-        question_passage_offsets.extend(sent_offset)
-        concat_qp += appended_question_text
+        tokenized_ques = [Token(text=tk.text, idx=tk.idx) for tk in tokenized_ques]
+        question_offset = [(tk.idx + len(concat_qp),
+                            tk.idx + len(tk.text) + len(concat_qp)) for tk in tokenized_ques]
+        concat_qp += question_text
         question_passage_tokens.extend(tokenized_ques)
+        question_passage_offsets.extend(question_offset)
+
+        for tok in self._sep_tokens:
+            question_passage_tokens.append(Token(text=tok, idx=len(concat_qp)))
+            question_passage_offsets.append((len(concat_qp), len(concat_qp)+len(tok)))
+            concat_qp += tok
 
         avg_sent_len = 0.0
 
@@ -344,9 +370,9 @@ class HotpotDatasetReader(DatasetReader):
                 sent_offset_qp = [(tk.idx + len(concat_qp),
                                    tk.idx + len(tk.text) + len(concat_qp)) for tk in tokenized_sent]
 
-                if sent_offset:
-                    sent_start = sent_offset[0][0]
-                    sent_end = sent_offset[-1][1]
+                if sent_offset_qp:
+                    sent_start = sent_offset_qp[0][0]
+                    sent_end = sent_offset_qp[-1][1]
                     sent_starts.append(sent_start)
                     sent_ends.append(sent_end)
 
@@ -354,15 +380,16 @@ class HotpotDatasetReader(DatasetReader):
                 concat_qp += sent
                 question_passage_tokens.extend(tokenized_sent)
 
-        concat_qp += '[SEP]'
-        question_passage_tokens.append(Token(text='[SEP]', idx=question_passage_tokens[-1].idx + 1))
-        question_passage_offsets.append((len(concat_qp), len(concat_qp) + len('[SEP]')))
-        span_starts = self.find_all_span_starts(answer_text, concat_qp)
+        #concat_qp += '[SEP]'
+        #question_passage_tokens.append(Token(text='[SEP]', idx=question_passage_tokens[-1].idx + 1))
+        #question_passage_offsets.append((len(concat_qp), len(concat_qp) + len('[SEP]')))
+        #span_starts = self.find_all_span_starts(answer_text, concat_qp)
+        span_starts = [] if answer_text in ["yes", "no"] else self.find_all_span_starts(answer_text, concat_qp)
         span_ends = [start + len(answer_text) for start in span_starts]
         sp_starts = [self.find_span_starts(s, concat_qp) for s in combined_chains]
         sp_ends = [start + len(span) for span, start in zip(combined_chains, sp_starts)]
 
-        self.count += avg_sent_len / len(sp_facts_id)
+        #self.count += avg_sent_len / len(sp_facts_id)
         return (question_text,
                 concat_qp,
                 zip(span_starts, span_ends),
@@ -414,8 +441,11 @@ class HotpotDatasetReader(DatasetReader):
         token_spans_sent: List[Tuple[int, int]] = []
 
         for char_span_start, char_span_end in char_spans:
-            (span_start, span_end), error = util.char_span_to_token_span(question_passage_offsets,
-                                                                         (char_span_start, char_span_end))
+            try:
+                (span_start, span_end), error = util.char_span_to_token_span(question_passage_offsets,
+                                                                             (char_span_start, char_span_end))
+            except:
+                continue
             # print(span_start, span_end)
             # print(question_passage_tokens[span_start:span_end+1])
             # print(answer_texts)
@@ -432,8 +462,11 @@ class HotpotDatasetReader(DatasetReader):
             token_spans.append((span_start, span_end))
 
         for char_span_sp_start, char_span_sp_end in char_spans_sp:
-            (span_start_sp, span_end_sp), error = util.char_span_to_token_span(question_passage_offsets,
-                                                                               (char_span_sp_start, char_span_sp_end))
+            try:
+                (span_start_sp, span_end_sp), error = util.char_span_to_token_span(question_passage_offsets,
+                                                                                (char_span_sp_start, char_span_sp_end))
+            except:
+                continue
             token_spans_sp.append((span_start_sp, span_end_sp))
 
         for char_span_sent_start, char_span_sent_end in char_spans_sent:
@@ -456,7 +489,9 @@ class HotpotDatasetReader(DatasetReader):
                                                    sent_labels,
                                                    answer_texts,
                                                    additional_metadata={'_id': article_id},
-                                                   para_limit=self._para_limit)
+                                                   para_limit=self._para_limit,
+                                                   id_to_wordpiecelimit=self._id_to_wordpiecelimit,
+                                                   wp_indexer_name=self._wp_indexer_name)
 
 
 if __name__ == '__main__':
