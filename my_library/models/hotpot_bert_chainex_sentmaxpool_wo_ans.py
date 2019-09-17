@@ -1,4 +1,3 @@
-from torch.autograd import Variable
 from typing import Any, Dict, List, Optional
 import numpy as np
 import torch
@@ -93,6 +92,8 @@ class PTNChainBidirectionalAttentionFlow(Model):
         sentence_spans = sentence_spans.view(batch_size*num_sent, 2).unsqueeze(1)
         # spans_rep_sp shape: (batch_size*num_sent*1, max_sent_len(no extend), embedding_dim)
         # spans_mask shape: (batch_size*num_sent, 1, max_sent_len(no_entend))
+        # print(sentence_spans)
+        # print(embedded_passage.shape)
         spans_rep_sp, spans_mask = convert_sequence_to_spans(embedded_passage, sentence_spans)
         max_sent_len = spans_rep_sp.size(1)
         spans_rep_sp = spans_rep_sp.view(batch_size, num_sent, max_sent_len, embedding_dim)
@@ -321,7 +322,7 @@ class SpanGate(Seq2SeqEncoder):
         # Shape: (batch_size, embedding_dim)
         #question_emb = util.get_final_encoder_states(question_tensor, question_mask, True)
         #question_emb = question_tensor[:, 0, :]
-        question_emb = torch.max(question_emb, dim=1)[0]
+        question_emb = torch.max(question_tensor, dim=1)[0]
 
         # decode the most likely evidence path
         # shape (all_predictions): (batch_size, K, num_decoding_steps)

@@ -5,12 +5,14 @@
           "type": "hotpot_reader_bert_sentence",
           "lazy": true,
           "para_limit": 2000,
-          "sent_limit": 100,
+          "sent_limit": 80,
+          "context_limit": 80,
+          "word_piece_limit": 256,
           "training": true,
           "filter_compare_q": false,
           "token_indexers": {
             "bert": {
-                "max_pieces": 168,
+                "max_pieces": 256,
                 "type": "my-bert-pretrained",
                 "pretrained_model": "bert-base-uncased",
                 "do_lowercase": true,
@@ -33,20 +35,21 @@
   "datasets_for_vocab_creation": [],
 
   "vocabulary": {
-    "directory_path": "/scratch/cluster/j0717lin/data/hotpot/bert_base_vocabulary/",
+    "directory_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/vocabulary/",
     "extend": false
   },
 
   "validation_dataset_reader": {
-    "type": "hotpot_reader_bert_flat",
-    "lazy": false,
+    "type": "hotpot_reader_bert_sentence",
+    "lazy": true,
     "para_limit": 2000,
-    "sent_limit": 100,
+    "sent_limit": 80,
+    "context_limit": 80,
     "training": false,
     "filter_compare_q": false,
     "token_indexers": {
       "bert": {
-          "max_pieces": 512,
+          "max_pieces": 256,
           "type": "my-bert-pretrained",
           "pretrained_model": "bert-base-uncased",
           "do_lowercase": true,
@@ -64,9 +67,9 @@
   },
 
 //  "train_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/train_chain/train*.json",
-    "train_data_path": "/scratch/cluster/j0717lin/data/hotpot/train_selected_oracle/train*.json",
-//  "validation_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_chain.json",
-    "validation_data_path": "/scratch/cluster/j0717lin/data/hotpot/dev/dev_selected_oracle.json",
+    "train_data_path": "/scratch/cluster/jfchen/jfchen/data/hotpot/train_oracle_overlap/train*.json",
+//    "validation_data_path": "/scratch/cluster/jfchen/jfchen/data/hotpot/dev/dev_selected_oracle.json.json",
+    "validation_data_path": "/scratch/cluster/jfchen/jfchen/data/hotpot/dev/dev_oracle_rouge_combbined.json",
 
   "model": {
     "type": "hotpot_bert_chainex_sentmaxpool_wo_ans",
@@ -82,7 +85,7 @@
             "type": "my-bert-pretrained",
             "requires_grad": true,
             "pretrained_model": "bert-base-uncased",
-            "max_pieces": 512
+            "max_pieces": 256
         },
 //        "token_characters": {
 //                "type": "character_encoding",
@@ -115,7 +118,7 @@
       "span_dim": 768,
       "max_decoding_steps": 5,
       "predict_eos": true,
-      "cell": "lstm",
+      "cell": "gru",
       "train_helper": "teacher_forcing",
       "val_helper": "beamsearch",
       "beam_size": 5,
@@ -196,7 +199,7 @@
     "num_epochs": 20,
     "grad_norm": 5.0,
     "patience": 10,
-    "cuda_device": [0]
+    "cuda_device": [1]
   }
 
 }
