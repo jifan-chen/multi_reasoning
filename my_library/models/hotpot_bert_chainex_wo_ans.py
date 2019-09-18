@@ -43,7 +43,7 @@ class PTNChainBidirectionalAttentionFlow(Model):
         self._bert_projection = bert_projection
 
         #self._gate_sent_encoder = gate_sent_encoder
-        #self._gate_self_attention_layer = gate_self_attention_layer
+        self._gate_self_attention_layer = gate_self_attention_layer
         self._gate_sent_encoder = None
         self._gate_self_attention_layer = None
 

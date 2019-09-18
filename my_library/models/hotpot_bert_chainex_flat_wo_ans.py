@@ -79,12 +79,12 @@ class PTNChainBidirectionalAttentionFlow(Model):
         # shape: [batch_size, max_passage_len, embedding_dim]
         embedded_passage = self._text_field_embedder(passage)
 
-        embedded_question = self._bert_projection(embedded_question)
-        embedded_passage = self._bert_projection(embedded_passage)
+        # embedded_question = self._bert_projection(embedded_question)
+        # embedded_passage = self._bert_projection(embedded_passage)
         print('size embedded_passage:', embedded_passage.shape)
         # mask
         ques_mask = util.get_text_field_mask(question, num_wrapping_dims=0).float()
-        # context_mask = util.get_text_field_mask(passage, num_wrapping_dims=0).float()
+        context_mask = util.get_text_field_mask(passage, num_wrapping_dims=1).float()
 
         # extract word embeddings for each sentence
         batch_size, max_passage_len, emb_size = embedded_passage.size()

@@ -14,7 +14,7 @@ def reduce_by_top_k_sent_wikihop(args_parse, original_data, top_k=5):
         selected_ners = []
         total_instance += 1
         ans = original_instance['answer']
-        original_paragraphs = original_instance['passage']
+        original_paragraphs = original_instance['supports']
         passage_para_count[len(original_paragraphs)] += 1
         original_ners = original_instance['ners']
         for i, para in enumerate(original_paragraphs[:20]):
@@ -27,9 +27,9 @@ def reduce_by_top_k_sent_wikihop(args_parse, original_data, top_k=5):
         for para_ners in original_ners:
             para_ners = para_ners[:top_k]
             selected_ners.append(para_ners)
-        original_instance['query'] = original_instance.pop('question')
-        original_instance.pop('passage')
-        original_instance['id'] = original_instance.pop('_id')
+        # original_instance['query'] = original_instance.pop('question')
+        # original_instance.pop('passage')
+        # original_instance['id'] = original_instance.pop('_id')
         original_instance['supports'] = selected_paras
         original_instance['ners'] = selected_ners
     for i in sorted(para_sent_count):
@@ -122,8 +122,10 @@ def main(args_parse):
     if args_parse.selected_path is not None:
         selected_data = json.load(open(args_parse.selected_path, 'r'))
     # reduce_by_selected_paras_hotpot(args_parse, original_data, selected_data)
-    reduce_by_top_k_sent_wikihop(args_parse, original_data)
-    # reduce_by_top_5_sent(args_parse, original_data)
+    if args_parse.task == 'wikihop':
+        reduce_by_top_k_sent_wikihop(args_parse, original_data)
+    else:
+        reduce_by_selected_paras_hotpot(args_parse, original_data, selected_data)
 
 
 if __name__ == '__main__':
@@ -131,5 +133,6 @@ if __name__ == '__main__':
     parser.add_argument('--original_path', help='path to hotpot dataset')
     parser.add_argument('--selected_path', default=None, help='path to the selected paragraph')
     parser.add_argument('--output_path', help='path to dep-labeled hotpot dataset')
+    parser.add_argument('--task', help='choose from wikihop or hotpot', default='hotpot')
     args = parser.parse_args()
     main(args)

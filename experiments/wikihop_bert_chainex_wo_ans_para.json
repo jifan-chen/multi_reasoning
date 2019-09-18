@@ -2,22 +2,22 @@
   "dataset_reader": {
       "type": "multiprocess",
       "base_reader" : {
-          "type": "wikihop_reader_bert_sentence",
+          "type": "wikihop_reader_bert_para",
           "lazy": true,
           "para_limit": 2000,
-          "sent_limit": 50,
-          "context_limit": 10,
+          "sent_limit": 80,
+          "word_piece_limit": 256,
           "training": true,
           "filter_compare_q": false,
           "token_indexers": {
             "bert": {
-                "max_pieces": 80,
+                "max_pieces": 256,
                 "type": "my-bert-pretrained",
                 "pretrained_model": "bert-base-uncased",
                 "do_lowercase": true,
                 "use_starting_offsets": true,
                 "truncate_long_sequences": true
-            }
+            },
 //            "token_characters": {
 //              "type": "characters",
 //              "character_tokenizer": {
@@ -39,22 +39,22 @@
   },
 
   "validation_dataset_reader": {
-    "type": "wikihop_reader_bert_sentence",
+    "type": "wikihop_reader_bert_para",
     "lazy": true,
     "para_limit": 2000,
-    "sent_limit": 100,
-    "context_limit": 10,
+    "sent_limit": 80,
+    "word_piece_limit": 256,
     "training": false,
     "filter_compare_q": false,
     "token_indexers": {
       "bert": {
-          "max_pieces": 80,
+          "max_pieces": 256,
           "type": "my-bert-pretrained",
           "pretrained_model": "bert-base-uncased",
           "do_lowercase": true,
           "use_starting_offsets": true,
           "truncate_long_sequences": true
-      }
+      },
 //      "token_characters": {
 //        "type": "characters",
 //        "character_tokenizer": {
@@ -65,13 +65,13 @@
     }
   },
 
-  "train_data_path": "/scratch/cluster/jfchen/jfchen/data/wikihop/dev_oracle.json",
-//    "train_data_path": "/scratch/cluster/jfchen/jfchen/data/wikihop/train_selected_oracle/train*.json",
-//  "validation_data_path": "/scratch/cluster/jfchen/jfchen/data/hotpot/train_selected_oracle/train8.json",
-    "validation_data_path": "/scratch/cluster/jfchen/jfchen/data/wikihop/dev_oracle.json",
+//  "train_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/train_chain/train*.json",
+    "train_data_path": "/scratch/cluster/jfchen/jfchen/data/wikihop/train_selected_oracle_overlap/train*.json",
+//    "validation_data_path": "/scratch/cluster/jfchen/jfchen/data/hotpot/dev/dev_selected_oracle.json.json",
+    "validation_data_path": "/scratch/cluster/jfchen/jfchen/data/wikihop/dev_selected_oracle_overlap.json",
 
   "model": {
-    "type": "hotpot_bert_chainex_wo_ans",
+    "type": "hotpot_bert_chainex_wo_ans_para",
 
     "text_field_embedder": {
       "allow_unmatched_keys": true,
@@ -84,8 +84,8 @@
             "type": "my-bert-pretrained",
             "requires_grad": true,
             "pretrained_model": "bert-base-uncased",
-            "max_pieces": 80
-        }
+            "max_pieces": 256
+        },
 //        "token_characters": {
 //                "type": "character_encoding",
 //                "embedding": {
@@ -113,11 +113,11 @@
 
 
     "span_gate": {
-      "type": "bert_span_gate",
+      "type": "span_gate",
       "span_dim": 768,
       "max_decoding_steps": 5,
       "predict_eos": true,
-      "cell": "lstm",
+      "cell": "gru",
       "train_helper": "teacher_forcing",
       "val_helper": "beamsearch",
       "beam_size": 5,
@@ -149,7 +149,7 @@
     "type": "multiprocess",
     "base_iterator": {
       "type": "bucket",
-      "biggest_batch_first": true,
+//      "biggest_batch_first": true,
       "sorting_keys": [
         [
           "passage",
@@ -157,7 +157,7 @@
         ]
       ],
       "max_instances_in_memory": 10,
-      "batch_size": 1
+      "batch_size": 2,
     },
     "num_workers": 2,
     "output_queue_size": 50
@@ -168,7 +168,7 @@
     "base_iterator": {
       "type": "basic",
       "max_instances_in_memory": 10,
-      "batch_size": 1
+      "batch_size": 2
     },
     "num_workers": 2,
     "output_queue_size": 50
@@ -198,7 +198,7 @@
     "num_epochs": 20,
     "grad_norm": 5.0,
     "patience": 10,
-    "cuda_device": [1]
+    "cuda_device": [5]
   }
 
 }

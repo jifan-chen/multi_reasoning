@@ -97,6 +97,7 @@ def preprocess_hotpot(article):
         "para_sents": paras,
         "sp_sents": sp_sents,
         "meta_sents": meta_sents,
+        "meta_question": question_text,
         "_id": article_id
     }
     return dict_wrap
@@ -167,6 +168,7 @@ def preprocess_wikihop(article):
         "para_sents": paras,
         "sp_sents": sp_sents,
         "meta_sents": meta_sents,
+        "meta_question": question_text,
         "_id": article_id
     }
     return dict_wrap
@@ -175,8 +177,12 @@ def preprocess_wikihop(article):
 def main(args):
     data = json.load(open(args.data_path))
     for article in tqdm(data):
-        # data_processed = preprocess_hotpot(article)
-        data_processed = preprocess_wikihop(article)
+        if args.task == 'hotpot':
+            data_processed = preprocess_hotpot(article)
+        elif args.task == 'wikihop':
+            data_processed = preprocess_wikihop(article)
+        else:
+            data_processed = None
         sent_pairs = data_processed['sent_edges']
         entity_graph = build_graph(sent_pairs)
         start_points = data_processed['start_points']
@@ -194,19 +200,35 @@ def main(args):
         # print('answer_labels:', answer_labels)
         search_all_possible_chain(start_points, entity_graph, para_sents, initial_chain, possible_chains,
                                   visited, initial_step, max_step, answer_labels)
+        # print(possible_chains)
+        if args.get_chain == "shortest":
+            most_possible_chain = get_most_possible_chain_by_shortest_path(possible_chains, start_points)
+        else:
+            most_possible_chain = get_most_possible_chain_by_ques_overlap(
+                possible_chains, start_points, data_processed['meta_sents'], data_processed['meta_question'])
 
-        most_possible_chain = get_most_possible_chain(possible_chains, start_points)
         # print('most_possible_chain:', most_possible_chain)
         article['possible_chain'] = most_possible_chain
-        article['question'] = article.pop('query')
-        article['passage'] = article.pop('supports')
-        article['_id'] = article.pop('id')
+        # article['golden_head'] = []
+        # article['coref_clusters'] = []
+        # article['question'] = article.pop('query')
+        # article['passage'] = article.pop('supports')
+        # article['_id'] = article.pop('id')
         # print(possible_chains)
+        # print("shortest:")
+        # for i in most_possible_chain_shortest:
+        #     print(i, ":", data_processed['meta_sents'][i])
+        # print('sp_set:', data_processed['sp_sents'])
+        # print()
+        # print('--' * 30)
+        #
+        # print("overlap most:")
         # for i in most_possible_chain:
         #     print(i, ":", data_processed['meta_sents'][i])
         # print('sp_set:', data_processed['sp_sents'])
         # print()
         # print('--' * 30)
+
         # input()
 
     write_result(args.output_path, data)
@@ -216,13 +238,34 @@ def write_result(output_path, data):
     json.dump(data, open(output_path, 'w'))
 
 
-def get_most_possible_chain(possible_chains, start_points, sp_set=None):
+def get_most_possible_chain_by_ques_overlap(possible_chains, start_points, meta_sentences, meta_question):
+    max_rouge = 0
+    best_chain_id = None
+    for chain_id, chain in enumerate(possible_chains):
+        sentences_in_chain = []
+        for i in chain:
+            sentences_in_chain.append(meta_sentences[i])
+        concat_sents = " ".join(sentences_in_chain)
+        rouge_score = rouge.get_scores(concat_sents, meta_question)
+        rf1 = rouge_score[0]['rouge-l']['f'] + rouge_score[0]['rouge-1']['f'] + rouge_score[0]['rouge-2']['f']
+        if rf1 > max_rouge:
+            max_rouge = rf1
+            best_chain_id = chain_id
+    if best_chain_id is None:
+        return []
+    else:
+        return possible_chains[best_chain_id]
+
+
+def get_most_possible_chain_by_shortest_path(possible_chains, start_points, sp_set=None):
     most_possible_chain = []
     entity_entry = start_points[:-1]
     if len(possible_chains) > 0:
         min_len = len(possible_chains[0])
         most_possible_chain = possible_chains[0]
         for chain in possible_chains:
+            # print(chain, entity_entry)
+            # input()
             if len(chain) < min_len and chain[0] in entity_entry:
                 min_len = len(chain)
                 most_possible_chain = chain
@@ -287,5 +330,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='hotpot predictor test')
     parser.add_argument('--data_path', type=str, help='path to the input data file')
     parser.add_argument('--output_path', type=str, help='path to the output data file', default="")
+    parser.add_argument('--get_chain', type=str, help='criteria to get the chain', default="shortest")
+    parser.add_argument('--task', type=str, help='which task wikihop/hotpot', default='hotpot')
     args = parser.parse_args()
     main(args)
