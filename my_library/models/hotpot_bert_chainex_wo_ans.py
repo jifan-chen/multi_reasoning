@@ -65,6 +65,8 @@ class PTNChainBidirectionalAttentionFlow(Model):
                 sent_labels: torch.IntTensor = None,
                 evd_chain_labels: torch.IntTensor = None,
                 q_type: torch.IntTensor = None,
+                transition_mask: torch.IntTensor = None,
+                start_transition_mask: torch.Tensor = None,
                 metadata: List[Dict[str, Any]] = None) -> Dict[str, torch.Tensor]:
 
         # In this model, we only take the first chain in ``evd_chain_labels`` for supervision
@@ -107,7 +109,9 @@ class PTNChainBidirectionalAttentionFlow(Model):
                                  embedded_question, ques_mask,
                                  evd_chain_labels,
                                  self._gate_self_attention_layer,
-                                 self._gate_sent_encoder)
+                                 self._gate_sent_encoder,
+                                 transition_mask,
+                                 start_transition_mask)
         batch_size, num_spans, max_batch_span_width = context_mask.size()
 
         output_dict = {
@@ -285,6 +289,8 @@ class SpanGate(Seq2SeqEncoder):
                 evd_chain_labels: torch.FloatTensor,
                 self_att_layer: Seq2SeqEncoder,
                 sent_encoder: Seq2SeqEncoder,
+                transition_mask: torch.IntTensor = None,
+                start_transition_mask: torch.FloatTensor = None,
                 get_all_beam: bool=False):
 
         #print("spans_tensor", spans_tensor.shape)
@@ -319,11 +325,14 @@ class SpanGate(Seq2SeqEncoder):
         # shape (final_hidden): (batch_size, K, decoder_output_dim)
         #print("max_pooled_span_emb", max_pooled_span_emb.shape)
         #print("max_pooled_span_mask", max_pooled_span_mask.shape)
+        print("start trans mask:", start_transition_mask)
+        print("trans mask:", transition_mask)
         all_predictions, all_logprobs, seq_logprobs, final_hidden = self.evd_decoder(max_pooled_span_emb,
                                                                                      max_pooled_span_mask,
                                                                                      question_emb,
                                                                                      aux_input=None,#question_emb,#None
-                                                                                     transition_mask=None,
+                                                                                     transition_mask=transition_mask,
+                                                                                     start_transition_mask=start_transition_mask,
                                                                                      labels=evd_chain_labels)
         print("all prediction:", all_predictions)
 
