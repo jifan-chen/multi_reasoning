@@ -107,13 +107,14 @@ class DemoHotpotPredictor(Predictor):
             self._dataset_reader = dataset_reader.reader
         else:
             self._dataset_reader = dataset_reader
-        with open('/scratch/cluster/jfchen/jason/multihopQA/hotpot/test/test_10000_chain.json', 'r') as f:
+        with open('/scratch/cluster/j0717lin/multihopQA/hotpot/test/test_10000_chain.json', 'r') as f:
             train = json.load(f)
-        with open('/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_chain.json', 'r') as f:
+        with open('/scratch/cluster/j0717lin/multihopQA/hotpot/dev/dev_distractor_chain.json', 'r') as f:
             dev = json.load(f)
-        with open('/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_chain_easy.json', 'r') as f:
+        with open('/scratch/cluster/j0717lin/multihopQA/hotpot/dev/dev_distractor_chain_easy.json', 'r') as f:
             dev_easy = json.load(f)
-        with open('/scratch/cluster/jfchen/jason/multihopQA/hotpot/dev/dev_distractor_chain_hard.json', 'r') as f:
+        #with open('/scratch/cluster/j0717lin/multihopQA/hotpot/dev/dev_distractor_chain_hard.json', 'r') as f:
+        with open('/scratch/cluster/j0717lin/multihopQA/multi_reasoning/save/chain_noam_beam5_teacherforcing_rl_evd_biatt_full/pred_dev_distractor_chain.json', 'r') as f:
             dev_hard = json.load(f)
         self.demo_dataset = {'train': train,
                              'dev': dev,
@@ -135,7 +136,11 @@ class DemoHotpotPredictor(Predictor):
                                   "instance_idx": idx}``
         """
         start_time = time.time()
-        dataset = self.demo_dataset[inputs['dataset']]
+        if inputs['dataset'] == '100 sp':
+            with open('/scratch/cluster/j0717lin/multihopQA/multi_reasoning/hotpot100_data/hotpot100_chain_inp.json', 'r') as f:
+                dataset = json.load(f)
+        else:
+            dataset = self.demo_dataset[inputs['dataset']]
         TH = float(inputs['th'])
         idx = int(inputs['instance_idx']) % len(dataset)
         hotpot_instance = dataset[idx]
@@ -195,7 +200,10 @@ class DemoHotpotPredictor(Predictor):
         if not coref_clusters is None:
             coref_clusters = {'coref clusters': {'document': passage_tokens, 'clusters': coref_clusters}}
         if not pred_sent_orders is None:
+            num_sents = len(output['sent_labels']) # for removing padding
             pred_chains = [order2chain(order) for order in pred_sent_orders]
+            pred_chains = [ch for ch in pred_chains if all(c < num_sents for c in ch)]
+            assert len(pred_chains) > 0, repr([order2chain(order) for order in pred_sent_orders]) + '\n' + 'num sents: %d' % num_sents + '\n%s' % output['_id']
             pred_chains_em = [chain_EM(chain, evd_possible_chains) for chain in pred_chains]
         print("fin:", time.time() - start_time)
         return {"doc":              passage_tokens,
@@ -218,7 +226,7 @@ class DemoHotpotPredictor(Predictor):
                 "topk_chain_em":    any(pred_chains_em) if not pred_sent_orders is None else None,
                 "sent_spans":       [list(sp) for sp in token_spans_sent],
                 "sent_labels":      sent_labels,
-                "coref_clusters":   coref clusters,
+                "coref_clusters":   coref_clusters,
                 "ans_sent_idxs":    ans_sent_idxs}
 
     def _predict_json(self, inputs: JsonDict) -> JsonDict:
