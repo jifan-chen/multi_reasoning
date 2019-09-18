@@ -18,14 +18,14 @@ from my_library.metrics.per_step_inclusion import Evd_Reward, get_evd_prediction
 from my_library.modules import PointerNetDecoder, BiAttention
 
 
-@Model.register("hotpot_bert_chainex_flat_wo_ans")
+@Model.register("hotpot_bert_chainex_wo_ans_para")
 class PTNChainBidirectionalAttentionFlow(Model):
     def __init__(self, vocab: Vocabulary,
                  text_field_embedder: TextFieldEmbedder,
                  gate_sent_encoder: Seq2SeqEncoder,
                  gate_self_attention_layer: Seq2SeqEncoder,
-                 bert_projection: FeedForward,
                  span_gate: Seq2SeqEncoder,
+                 bert_projection: FeedForward,
                  dropout: float = 0.2,
                  output_att_scores: bool = True,
                  regularizer: Optional[RegularizerApplicator] = None) -> None:
@@ -39,13 +39,12 @@ class PTNChainBidirectionalAttentionFlow(Model):
         self._output_att_scores = output_att_scores
 
         self._span_gate = span_gate
-
-        self._bert_projection = bert_projection
-
-        #self._gate_sent_encoder = gate_sent_encoder
-        #self._gate_self_attention_layer = gate_self_attention_layer
+        # self._gate_sent_encoder = gate_sent_encoder
+        # self._gate_self_attention_layer = gate_self_attention_layer
         self._gate_sent_encoder = None
         self._gate_self_attention_layer = None
+
+        self._bert_projection = bert_projection
 
         self._f1_metrics = AttF1Measure(0.5, top_k=False)
 
@@ -76,22 +75,46 @@ class PTNChainBidirectionalAttentionFlow(Model):
         # bert embedding for answer prediction
         # shape: [batch_size, max_q_len, emb_size]
         embedded_question = self._text_field_embedder(question)
-        # shape: [batch_size, max_passage_len, embedding_dim]
+        # shape: [batch_size, num_para, max_para_len, embedding_dim]
         embedded_passage = self._text_field_embedder(passage)
 
-        # embedded_question = self._bert_projection(embedded_question)
-        # embedded_passage = self._bert_projection(embedded_passage)
-        print('size embedded_passage:', embedded_passage.shape)
         # mask
         ques_mask = util.get_text_field_mask(question, num_wrapping_dims=0).float()
         context_mask = util.get_text_field_mask(passage, num_wrapping_dims=1).float()
 
         # extract word embeddings for each sentence
-        batch_size, max_passage_len, emb_size = embedded_passage.size()
-        batch_size, max_num_sent, _ = sentence_spans.size()
-        # Shape(spans_rep): (batch_size * num_spans, max_batch_span_width, embedding_dim)
-        # Shape(spans_mask): (batch_size, num_spans, max_batch_span_width)
-        spans_rep_sp, spans_mask = convert_sequence_to_spans(embedded_passage, sentence_spans)
+        batch_size, num_para, max_para_len, emb_size = embedded_passage.size()
+        batch_size, num_para, max_num_sent, _ = sentence_spans.size()
+        # Shape(spans_rep): (batch_size*num_para*max_num_sent, max_batch_span_width, embedding_dim)
+        # Shape(spans_mask): (batch_size*num_para, max_num_sent, max_batch_span_width)
+        spans_rep_sp, spans_mask = convert_sequence_to_spans(embedded_passage.view(batch_size * num_para,
+                                                                                   max_para_len,
+                                                                                   emb_size),
+                                                             sentence_spans.view(batch_size * num_para,
+                                                                                 max_num_sent,
+                                                                                 2))
+        _, _, max_batch_span_width = spans_mask.size()
+        # flatten out the num_para dimension
+        # shape: (batch_size, num_para, max_num_sent), specify which sent is not pad(i.e. all tok in the sent is not pad)
+        sentence_mask = (spans_mask.sum(-1) > 0).float().view(batch_size, num_para, max_num_sent)
+        # the maximum total number of sentences for each example
+        max_num_global_sent = torch.max(sentence_mask.sum([1, 2])).long().item()
+        num_spans = max_num_global_sent
+        # shape: (batch_size, num_spans, max_batch_span_width*embedding_dim),
+        # where num_spans equals to num_para * num_sent(no max bc para paddings are removed)
+        # and also equals to max_num_global_sent
+        spans_rep_sp = convert_span_to_sequence(spans_rep_sp.new_zeros((batch_size, max_num_global_sent)),
+                                                spans_rep_sp.view(batch_size * num_para,
+                                                                  max_num_sent,
+                                                                  max_batch_span_width * emb_size),
+                                                sentence_mask)
+        # shape: (batch_size * num_spans, max_batch_span_width, embedding_dim),
+        spans_rep_sp = spans_rep_sp.view(batch_size * max_num_global_sent, max_batch_span_width, emb_size)
+
+        # shape: (batch_size, num_spans, max_batch_span_width),
+        spans_mask = convert_span_to_sequence(spans_mask.new_zeros((batch_size, max_num_global_sent)),
+                                              spans_mask,
+                                              sentence_mask)
         # chain prediction
         # Shape(all_predictions): (batch_size, num_decoding_steps)
         # Shape(all_logprobs): (batch_size, num_decoding_steps)
@@ -101,13 +124,13 @@ class PTNChainBidirectionalAttentionFlow(Model):
         # Shape(gate_mask): (batch_size, num_spans)
         # Shape(g_att_score): (batch_size, num_heads, num_spans, num_spans)
         # Shape(orders): (batch_size, K, num_spans)
-        all_predictions,    \
-        all_logprobs,       \
-        seq_logprobs,       \
-        gate,               \
-        gate_probs,         \
-        gate_mask,          \
-        g_att_score,        \
+        all_predictions, \
+        all_logprobs, \
+        seq_logprobs, \
+        gate, \
+        gate_probs, \
+        gate_mask, \
+        g_att_score, \
         orders = self._span_gate(spans_rep_sp, spans_mask,
                                  embedded_question, ques_mask,
                                  evd_chain_labels,
@@ -116,9 +139,9 @@ class PTNChainBidirectionalAttentionFlow(Model):
         batch_size, num_spans, max_batch_span_width = spans_mask.size()
 
         output_dict = {
-            "pred_sent_labels": gate.squeeze(1).view(batch_size, num_spans), #[B, num_span]
-            "gate_probs": gate_probs.squeeze(1).view(batch_size, num_spans), #[B, num_span]
-            "pred_sent_orders": orders, #[B, K, num_span]
+            "pred_sent_labels": gate.squeeze(1).view(batch_size, num_spans),  # [B, num_span]
+            "gate_probs": gate_probs.squeeze(1).view(batch_size, num_spans),  # [B, num_span]
+            "pred_sent_orders": orders,  # [B, K, num_span]
         }
         if self._output_att_scores:
             if not g_att_score is None:
@@ -149,14 +172,14 @@ class PTNChainBidirectionalAttentionFlow(Model):
         print("gold chain:", evd_chain_labels)
         predict_mask = predict_mask.float().squeeze(1)
         rl_loss = -torch.mean(torch.sum(all_logprobs * predict_mask * evd_instance_mask[:, None], dim=1))
-        # torch.cuda.empty_cache()
+
         # Compute the EM and F1 on SQuAD and add the tokenized input to the output.
         # Compute before loss for rl
         if metadata is not None:
             output_dict['answer_texts'] = []
             question_tokens = []
             passage_tokens = []
-            #token_spans_sp = []
+            # token_spans_sp = []
             token_spans_sent = []
             sent_labels_list = []
             evd_possible_chains = []
@@ -167,6 +190,7 @@ class PTNChainBidirectionalAttentionFlow(Model):
             for i in range(batch_size):
                 question_tokens.append(metadata[i]['question_tokens'])
                 passage_tokens.append(metadata[i]['passage_tokens'])
+                # token_spans_sp.append(metadata[i]['token_spans_sp'])
                 token_spans_sent.append(metadata[i]['token_spans_sent'])
                 sent_labels_list.append(metadata[i]['sent_labels'])
                 ids.append(metadata[i]['_id'])
@@ -176,19 +200,19 @@ class PTNChainBidirectionalAttentionFlow(Model):
                 output_dict['answer_texts'].append(answer_texts)
 
                 # shift sentence indice back
-                evd_possible_chains.append([s_idx-1 for s_idx in metadata[i]['evd_possible_chains'][0] if s_idx > 0])
-                ans_sent_idxs.append([s_idx-1 for s_idx in metadata[i]['ans_sent_idxs']])
+                evd_possible_chains.append([s_idx - 1 for s_idx in metadata[i]['evd_possible_chains'][0] if s_idx > 0])
+                ans_sent_idxs.append([s_idx - 1 for s_idx in metadata[i]['ans_sent_idxs']])
                 print("ans_sent_idxs:", metadata[i]['ans_sent_idxs'])
                 if len(metadata[i]['ans_sent_idxs']) > 0:
                     pred_sent_orders = orders[i].detach().cpu().numpy()
-                    if any([pred_sent_orders[0][s_idx-1] >= 0 for s_idx in metadata[i]['ans_sent_idxs']]):
+                    if any([pred_sent_orders[0][s_idx - 1] >= 0 for s_idx in metadata[i]['ans_sent_idxs']]):
                         self.evd_ans_metric(1)
                         pred_chains_include_ans.append(1)
                     else:
                         self.evd_ans_metric(0)
                         pred_chains_include_ans.append(0)
-                    if any([any([pred_sent_orders[beam][s_idx-1] >= 0 for s_idx in metadata[i]['ans_sent_idxs']])
-                                                                        for beam in range(len(pred_sent_orders))]):
+                    if any([any([pred_sent_orders[beam][s_idx - 1] >= 0 for s_idx in metadata[i]['ans_sent_idxs']])
+                            for beam in range(len(pred_sent_orders))]):
                         self.evd_beam_ans_metric(1)
                         beam_pred_chains_include_ans.append(1)
                     else:
@@ -197,7 +221,7 @@ class PTNChainBidirectionalAttentionFlow(Model):
 
             output_dict['question_tokens'] = question_tokens
             output_dict['passage_tokens'] = passage_tokens
-            #output_dict['token_spans_sp'] = token_spans_sp
+            # output_dict['token_spans_sp'] = token_spans_sp
             output_dict['token_spans_sent'] = token_spans_sent
             output_dict['sent_labels'] = sent_labels_list
             output_dict['evd_possible_chains'] = evd_possible_chains
@@ -216,6 +240,7 @@ class PTNChainBidirectionalAttentionFlow(Model):
             except RuntimeError:
                 print('\n meta_data:', metadata)
                 print(output_dict['_id'])
+                print(span_start_logits.shape)
 
         return output_dict
 
@@ -224,12 +249,12 @@ class PTNChainBidirectionalAttentionFlow(Model):
         ans_in_evd = self.evd_ans_metric.get_metric(reset)
         beam_ans_in_evd = self.evd_beam_ans_metric.get_metric(reset)
         metrics = {
-                'evd_p': p,
-                'evd_r': r,
-                'evd_f1': evidence_f1_socre,
-                'ans_in_evd': ans_in_evd,
-                'beam_ans_in_evd': beam_ans_in_evd,
-                }
+            'evd_p': p,
+            'evd_r': r,
+            'evd_f1': evidence_f1_socre,
+            'ans_in_evd': ans_in_evd,
+            'beam_ans_in_evd': beam_ans_in_evd,
+        }
         for name, tracker in self._loss_trackers.items():
             metrics[name] = tracker.get_metric(reset).item()
         evd_sup_acc = self.evd_sup_acc_metric.get_metric(reset)
