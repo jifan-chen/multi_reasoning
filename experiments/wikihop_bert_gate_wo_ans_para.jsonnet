@@ -43,7 +43,6 @@
     "lazy": true,
     "para_limit": 2000,
     "sent_limit": 80,
-    "word_piece_limit": 256,
     "training": false,
     "filter_compare_q": false,
     "token_indexers": {
@@ -71,7 +70,7 @@
     "validation_data_path": "/scratch/cluster/jfchen/jfchen/data/wikihop/dev_selected_oracle_shortest.json",
 
   "model": {
-    "type": "hotpot_bert_chainex_wo_ans_para",
+    "type": "hotpot_bert_gate_wo_ans_para",
 
     "text_field_embedder": {
       "allow_unmatched_keys": true,
@@ -103,25 +102,10 @@
       }
     },
 
-    "bert_projection": {
-        "input_dim": 768,
-        "num_layers": 1,
-        "hidden_dims": 200,
-        "activations": "relu",
-        "dropout": 0.1
-    },
-
-
     "span_gate": {
-      "type": "span_gate_para",
+      "type": "indep_bert_span_gate_para",
       "span_dim": 768,
-      "max_decoding_steps": 5,
-      "predict_eos": true,
-      "cell": "gru",
-      "train_helper": "teacher_forcing",
-      "val_helper": "beamsearch",
-      "beam_size": 5,
-      "pass_label": false
+      "gate_self_att": false
     },
 
     "gate_sent_encoder": {
@@ -134,22 +118,24 @@
     },
 
     "gate_self_attention_layer":{
-      "type": "multi_head_self_attention",
-      "num_heads": 4,
-      "input_dim": 768,
-      "attention_dim": 768,
-      "values_dim": 768,
+      "type": "multi_head_self_attention_with_sup",
+      "num_heads": 2,
+      "input_dim": 200,
+      "attention_dim": 200,
+      "values_dim": 200,
       "attention_dropout_prob": 0.1
     },
 
-    "dropout": 0.1
+    "dropout": 0.1,
+
+    "sent_labels_src": "chain"
   },
 
   "iterator": {
     "type": "multiprocess",
     "base_iterator": {
       "type": "bucket",
-//      "biggest_batch_first": true,
+      "biggest_batch_first": true,
       "sorting_keys": [
         [
           "passage",
