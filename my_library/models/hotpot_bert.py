@@ -29,10 +29,6 @@ class BidirectionalAttentionFlow(Model):
 
         self._squad_metrics = SquadEmAndF1()
 
-        self._f1_metrics = F1Measure(1)
-
-        self._coref_f1_metric = AttF1Measure(0.1)
-
         self.linear_start = nn.Linear(encoding_dim, 1)
 
         self.linear_end = nn.Linear(encoding_dim, 1)
@@ -140,13 +136,9 @@ class BidirectionalAttentionFlow(Model):
 
     def get_metrics(self, reset: bool = False) -> Dict[str, float]:
         exact_match, f1_score = self._squad_metrics.get_metric(reset)
-        p, r, evidence_f1_socre = self._f1_metrics.get_metric(reset)
         metrics = {
                 'em': exact_match,
                 'f1': f1_score,
-                'evd_p': p,
-                'evd_r': r,
-                'evd_f1': evidence_f1_socre
                 }
         for name, tracker in self._loss_trackers.items():
             metrics[name] = tracker.get_metric(reset).item()
