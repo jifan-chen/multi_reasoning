@@ -58,10 +58,38 @@ def get_necessary_info(article):
     article['ans_sent_idxs'] = ans_sent_idxs
 
 
+def get_wiki_necessary_info(article):
+    paragraphs = article['context']
+    answer_text = article['answer'].strip().replace("\n", "")
+    ans_sent_idxs = []
+    all_sents = []
+    global_sent_id = 0
+    for para in paragraphs:
+        for sent_id, sent in enumerate(para):
+            if answer_text in sent:
+                ans_sent_idxs.append(global_sent_id)
+            global_sent_id += 1
+            all_sents.append(sent)
+    article['all_sents'] = all_sents
+    article['ans_sent_idxs'] = ans_sent_idxs
+
+
+def filter_res_by_f1(res, f1_path, low=0, high=1):
+    f1s = []
+    with open(f1_path, 'r') as f:
+        for line in f:
+            f1s.append(json.loads(line))
+    id2f1 = {d['_id']: d['f1'] for d in f1s}
+    res = [r for r in res if low <= id2f1[r['_id']] < high]
+    return res
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='evaluate chain predictions')
     parser.add_argument('pred_path', type=str, help='path to prediction file')
     parser.add_argument('--data_path', type=str, help='path to orig data file')
+    parser.add_argument('--f1_path', type=str, help='path to f1 res')
+    parser.add_argument('--f1_range', type=str, help='f1 range')
     parser.add_argument('--k', type=int, help='the number of predicted chains to consider',
                         default=100000)
     parser.add_argument('--per_line', default=False, help='whether the prediction is stored per line in the prediction file',
@@ -74,6 +102,8 @@ if __name__ == '__main__':
                         choices=['pred', 'oracle'])
     parser.add_argument('--chain_f1_target', default='sp', help='to use rb or sp when calc the chain f1',
                         choices=['sp', 'rb'])
+    parser.add_argument('--corpus', default='hotpot', help='wikihop or hotpot',
+                        choices=['wikihop', 'hotpot'])
     args = parser.parse_args()
 
     res_path = args.pred_path
@@ -88,10 +118,26 @@ if __name__ == '__main__':
                     res.append(json.loads(line))
             else:
                 res += json.load(f)
+
+    # turn wikihop keys to hotpot keys
+    if args.corpus == 'wikihop':
+        for r in res:
+            r['context'] = r.pop('supports')
+            r['_id'] = r.pop('id')
+
+    # filter res by f1
+    if args.f1_path:
+        f1_l, f1_h = json.loads(args.f1_range)
+        res = filter_res_by_f1(res, args.f1_path, f1_l, f1_h)
+        print("after filtering by f1, data size:", len(res))
+
     # get sent_labels, etc if needed. Here we assume the prediction is data file
     if not 'sent_labels' in res[0]:
         for r in res:
-            get_necessary_info(r)
+            if args.corpus == 'wikihop':
+                get_wiki_necessary_info(r)
+            else:
+                get_necessary_info(r)
     print("Number of instances:", len(res))
     print("Number of ids:", len(set([r['_id'] for r in res])))
     
