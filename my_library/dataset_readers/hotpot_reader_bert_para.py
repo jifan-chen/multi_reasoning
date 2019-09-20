@@ -90,7 +90,7 @@ def make_meta_data(passage_text, passage_para_offsets, question_tokens, passage_
         ans_sent_idxs = [s_idx + 1 for s_idx in ans_sent_idxs if s_idx < len(sent_labels)]
     metadata = {'original_passage': passage_text, 'token_offsets': passage_para_offsets,
                 'question_tokens': [token.text for token in question_tokens],
-                'passage_tokens': [[token.text] for para_tokens in passage_para_tokens for token in para_tokens],
+                'passage_tokens': [[token.text for token in para_tokens] for para_tokens in passage_para_tokens],
                 'token_spans_sent': para_sent_token_spans,
                 'sent_labels': sent_labels,
                 '_id': article_id}

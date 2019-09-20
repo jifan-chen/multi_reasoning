@@ -66,9 +66,9 @@
   },
 
 //  "train_data_path": "/scratch/cluster/jfchen/jason/multihopQA/hotpot/train_chain/train*.json",
-    "train_data_path": "/scratch/cluster/jfchen/jfchen/data/hotpot/train_oracle_overlap/train*.json",
+    "train_data_path": "/scratch/cluster/jfchen/jfchen/data/hotpot/train_selected_oracle/train*.json",
 //    "validation_data_path": "/scratch/cluster/jfchen/jfchen/data/hotpot/dev/dev_selected_oracle.json.json",
-    "validation_data_path": "/scratch/cluster/jfchen/jfchen/data/hotpot/dev/dev_oracle_rouge_combbined.json",
+    "validation_data_path": "/scratch/cluster/jfchen/jfchen/data/hotpot/dev/dev_selected_oracle.json",
 
   "model": {
     "type": "hotpot_bert_chainex_wo_ans_para",
@@ -113,7 +113,7 @@
 
 
     "span_gate": {
-      "type": "span_gate",
+      "type": "span_gate_para",
       "span_dim": 768,
       "max_decoding_steps": 5,
       "predict_eos": true,
@@ -198,7 +198,7 @@
     "num_epochs": 20,
     "grad_norm": 5.0,
     "patience": 10,
-    "cuda_device": [3]
+    "cuda_device": [0]
   }
 
 }
